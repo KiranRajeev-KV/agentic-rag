@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -19,7 +19,7 @@ class LLMRouterOutput(BaseModel):
     rewritten_query: str
     retrieval_filters: dict[str, str] = Field(default_factory=dict)
     tool_name: str | None = None
-    tool_args: dict[str, Any] = Field(default_factory=dict)
+    tool_args: dict[str, str] = Field(default_factory=dict)
     clarifying_question: str | None = None
     refusal_reason: str | None = None
     expected_next_node: str
@@ -52,3 +52,21 @@ class LLMMemoryWriteOutput(BaseModel):
     key: str = ""
     value: str = ""
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+
+
+class LLMCitationValidationOutput(BaseModel):
+    valid: bool
+    verdict: Literal[
+        "VALID",
+        "MISSING_CITATION",
+        "UNKNOWN_CITATION",
+        "UNSUPPORTED_CLAIM",
+        "SOURCE_BLOCK_MISMATCH",
+        "INTERNAL_ID_LEAK",
+        "TOOL_CITATION_ERROR",
+    ]
+    unsupported_claims: list[str] = Field(default_factory=list)
+    missing_citation_spans: list[str] = Field(default_factory=list)
+    unknown_citation_ids: list[str] = Field(default_factory=list)
+    internal_id_leaks: list[str] = Field(default_factory=list)
+    repair_instruction: str = ""

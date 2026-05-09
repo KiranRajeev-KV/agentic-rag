@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-import json
+import time
 from typing import TypeVar
 
 from openai import OpenAI
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from agentic_rag.config import Settings
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class LLMStructuredOutputError(RuntimeError):
+    """Raised when strict structured output parsing fails."""
 
 
 class OpenAILLMClient:
@@ -29,21 +33,29 @@ class OpenAILLMClient:
     ) -> T:
         if not self.enabled():
             raise RuntimeError("OpenAI LLM client is not configured.")
-        response = self._client_or_raise().chat.completions.create(
+
+        started = time.monotonic()
+        response = self._client_or_raise().responses.parse(
             model=model,
-            temperature=0,
-            messages=[
+            input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            response_format={"type": "json_object"},
+            text_format=schema,
+            temperature=0,
         )
-        content = response.choices[0].message.content or "{}"
-        try:
-            return schema.model_validate_json(content)
-        except ValidationError:
-            parsed = json.loads(content)
-            return schema.model_validate(parsed)
+        _ = int((time.monotonic() - started) * 1000)
+
+        parsed = getattr(response, "output_parsed", None)
+        if parsed is None:
+            refusal = getattr(response, "refusal", None)
+            if refusal:
+                raise LLMStructuredOutputError(f"Model refused structured output: {refusal}")
+            raise LLMStructuredOutputError("No structured output was parsed from response.")
+
+        if isinstance(parsed, schema):
+            return parsed
+        return schema.model_validate(parsed)
 
     def _client_or_raise(self) -> OpenAI:
         if self._client is not None:

@@ -36,13 +36,33 @@ Default is should_write=false.
 Write only for explicit durable user decisions/preferences/constraints or stable project facts.
 """
 
+CITATION_SYSTEM_PROMPT = """You validate citation grounding for a local-corpus answer.
+Return JSON only.
+Rules:
+- Mark valid=true only if every factual claim is supported by cited IDs.
+- Reject unknown IDs, missing citations, source-block mismatches, or internal ID leaks.
+- Treat unsupported claims as invalid.
+"""
 
-def router_user_prompt(query: str, memory_context: list[dict[str, str]]) -> str:
+
+def router_user_prompt(
+    query: str,
+    memory_context: list[dict[str, str]],
+    conversation_summary: str = "",
+    recent_turns: list[dict[str, str]] | None = None,
+    episodic_context: list[dict[str, str]] | None = None,
+) -> str:
     return (
         "User query:\n"
         f"{query}\n\n"
+        "Conversation summary:\n"
+        f"{conversation_summary}\n\n"
+        "Recent turns:\n"
+        f"{json.dumps(recent_turns or [], ensure_ascii=True)}\n\n"
         "Recent semantic memory:\n"
-        f"{json.dumps(memory_context, ensure_ascii=True)}"
+        f"{json.dumps(memory_context, ensure_ascii=True)}\n\n"
+        "Recent episodic memory:\n"
+        f"{json.dumps(episodic_context or [], ensure_ascii=True)}"
     )
 
 
@@ -80,3 +100,25 @@ def answer_user_prompt(
 
 def memory_user_prompt(query: str, answer: str, final_action: str) -> str:
     return f"Turn data:\nquery={query}\nfinal_action={final_action}\nanswer={answer}"
+
+
+def citation_user_prompt(
+    *,
+    final_action: str,
+    answer_text: str,
+    sources_block: str,
+    allowed_source_ids: list[str],
+    allowed_tool_ids: list[str],
+) -> str:
+    return (
+        "Final action:\n"
+        f"{final_action}\n\n"
+        "Answer text:\n"
+        f"{answer_text}\n\n"
+        "Sources block:\n"
+        f"{sources_block}\n\n"
+        "Allowed source IDs:\n"
+        f"{json.dumps(allowed_source_ids, ensure_ascii=True)}\n\n"
+        "Allowed tool IDs:\n"
+        f"{json.dumps(allowed_tool_ids, ensure_ascii=True)}"
+    )
