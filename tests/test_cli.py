@@ -95,6 +95,32 @@ def test_db_init_and_trace_list(tmp_path: Path, monkeypatch) -> None:
     assert "No traces found." in trace_result.stdout
 
 
+def test_ask_with_mocked_graph(monkeypatch) -> None:
+    class _FakeRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run(self, query: str):  # noqa: ANN001
+            assert query == "What is agent memory?"
+            return {
+                "trace_id": "tr_test",
+                "route_action": "RETRIEVE",
+                "retrieved_child_ids": ["c1", "c2"],
+                "selected_parent_ids": ["p1"],
+                "evidence_status": "SUFFICIENT",
+                "context_packets": [{"source_id": "S1"}],
+                "final_action": "ANSWER_FROM_CONTEXT",
+                "final_answer": "Answer body [S1]\n\nSources:\n[S1] Test source",
+            }
+
+    monkeypatch.setattr(cli_module, "AskGraphRunner", _FakeRunner)
+    monkeypatch.setattr(cli_module, "initialize_storage", lambda settings, init_qdrant: None)
+    result = runner.invoke(app, ["ask", "What is agent memory?", "--debug"])
+    assert result.exit_code == 0
+    assert "Answer body [S1]" in result.stdout
+    assert "Trace: tr_test" in result.stdout
+
+
 def test_corpus_discover_with_mocked_tool(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.sqlite"))
     monkeypatch.setenv("APP_RUNS_DIR", str(tmp_path / "runs"))

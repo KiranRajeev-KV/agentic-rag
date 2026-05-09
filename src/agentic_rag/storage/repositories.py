@@ -114,6 +114,20 @@ class PaperRepository:
         )
         return [dict(row) for row in rows]
 
+    def get_by_ids(self, paper_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not paper_ids:
+            return {}
+        placeholders = ",".join("?" for _ in paper_ids)
+        rows = self.store.fetchall(
+            f"""
+            SELECT paper_id, arxiv_id, title, primary_category, categories, published_at, updated_at
+            FROM papers
+            WHERE paper_id IN ({placeholders})
+            """,
+            tuple(paper_ids),
+        )
+        return {str(row["paper_id"]): dict(row) for row in rows}
+
 
 class ParentRepository:
     def __init__(self, store: SQLiteStore) -> None:
@@ -138,6 +152,28 @@ class ParentRepository:
                 rows,
             )
             conn.commit()
+
+    def get_by_ids(self, parent_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not parent_ids:
+            return {}
+        placeholders = ",".join("?" for _ in parent_ids)
+        rows = self.store.fetchall(
+            f"""
+            SELECT
+              parent_id,
+              paper_id,
+              section_path,
+              section_heading,
+              section_type,
+              page_start,
+              page_end,
+              parent_text
+            FROM parent_sections
+            WHERE parent_id IN ({placeholders})
+            """,
+            tuple(parent_ids),
+        )
+        return {str(row["parent_id"]): dict(row) for row in rows}
 
 
 class ChunkRepository:
@@ -263,6 +299,31 @@ class ChunkRepository:
             )
             conn.commit()
 
+    def get_by_ids(self, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" for _ in chunk_ids)
+        rows = self.store.fetchall(
+            f"""
+            SELECT
+              chunk_id,
+              parent_id,
+              paper_id,
+              chunk_index,
+              section_path,
+              section_type,
+              content_type,
+              page_start,
+              page_end,
+              token_count,
+              chunk_text
+            FROM child_chunks
+            WHERE chunk_id IN ({placeholders})
+            """,
+            tuple(chunk_ids),
+        )
+        return {str(row["chunk_id"]): dict(row) for row in rows}
+
     @staticmethod
     def _with_index_defaults(row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -308,6 +369,19 @@ class SemanticMemoryRepository:
             (memory_id, namespace, kind, key, value, confidence, source_turn_id, now, now),
         )
 
+    def list_active(self, namespace: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.store.fetchall(
+            """
+            SELECT memory_id, namespace, kind, key, value, confidence, source_turn_id, updated_at
+            FROM semantic_memories
+            WHERE namespace = ? AND is_active = 1
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (namespace, limit),
+        )
+        return [dict(row) for row in rows]
+
 
 class TraceRepository:
     def __init__(self, store: SQLiteStore) -> None:
@@ -340,3 +414,44 @@ class TraceRepository:
             (limit,),
         )
         return [dict(row) for row in rows]
+
+    def add_event(
+        self,
+        trace_id: str,
+        level: str,
+        event: str,
+        payload_json: str,
+        node: str | None = None,
+    ) -> None:
+        self.store.execute(
+            """
+            INSERT INTO trace_events (trace_id, ts, level, event, node, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (trace_id, _utc_now(), level, event, node, payload_json),
+        )
+
+    def get_trace_with_events(self, trace_id: str) -> dict[str, Any] | None:
+        traces = self.store.fetchall(
+            """
+            SELECT trace_id, thread_id, turn_id, run_mode, started_at, completed_at
+            FROM traces
+            WHERE trace_id = ?
+            """,
+            (trace_id,),
+        )
+        if not traces:
+            return None
+        events = self.store.fetchall(
+            """
+            SELECT ts, level, event, node, payload_json
+            FROM trace_events
+            WHERE trace_id = ?
+            ORDER BY event_id ASC
+            """,
+            (trace_id,),
+        )
+        return {
+            "trace": dict(traces[0]),
+            "events": [dict(row) for row in events],
+        }

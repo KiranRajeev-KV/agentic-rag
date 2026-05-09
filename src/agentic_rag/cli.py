@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
+from agentic_rag.agent import AskGraphRunner
 from agentic_rag.config import Settings, get_settings
 from agentic_rag.ingest.indexing import ChildChunkIndexer
 from agentic_rag.ingest.pipeline import IngestPipeline
 from agentic_rag.storage.bootstrap import initialize_storage
-from agentic_rag.storage.repositories import TraceRepository
 from agentic_rag.storage.sqlite import SQLiteStore
 from agentic_rag.tools.arxiv_tools import ArxivToolset
 from agentic_rag.tools.schemas import ArxivGetRecentInput
+from agentic_rag.traces.reader import TraceReader
 
 app = typer.Typer(help="Agentic RAG local-first CLI.")
 eval_app = typer.Typer(help="Run evaluation and ablation commands.")
@@ -70,9 +71,14 @@ def ask_command(
     question: str,
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
-    typer.echo(f"[stub] ask requested: {question}")
+    settings = get_settings()
+    initialize_storage(settings=settings, init_qdrant=False)
+    runner = AskGraphRunner(settings=settings)
+    final_state = runner.run(question)
+    final_answer = final_state.get("final_answer", "")
+    typer.echo(final_answer)
     if debug:
-        typer.echo("[stub] debug trace summary will be implemented in a later milestone.")
+        _print_debug_summary(final_state)
 
 
 @app.command("index")
@@ -144,7 +150,7 @@ def trace_list_command(
 ) -> None:
     settings = get_settings()
     store = SQLiteStore(settings.app_db_path)
-    trace_repo = TraceRepository(store)
+    trace_repo = TraceReader(store)
     try:
         traces = trace_repo.list_recent(limit=last)
     except sqlite3.OperationalError as err:
@@ -166,19 +172,12 @@ def trace_list_command(
 def trace_show_command(trace_id: str) -> None:
     settings = get_settings()
     store = SQLiteStore(settings.app_db_path)
-    rows = store.fetchall(
-        """
-        SELECT trace_id, thread_id, turn_id, run_mode, started_at, completed_at
-        FROM traces
-        WHERE trace_id = ?
-        """,
-        (trace_id,),
-    )
-    if not rows:
+    reader = TraceReader(store)
+    result = reader.show(trace_id)
+    if not result:
         typer.echo(f"Trace not found: {trace_id}")
         raise typer.Exit(code=1)
-
-    trace = dict(rows[0])
+    trace = result["trace"]
     typer.echo(
         f"trace_id={trace['trace_id']}\n"
         f"thread_id={trace['thread_id']}\n"
@@ -187,6 +186,15 @@ def trace_show_command(trace_id: str) -> None:
         f"started_at={trace['started_at']}\n"
         f"completed_at={trace['completed_at']}"
     )
+    typer.echo("events:")
+    for event in result["events"]:
+        event_line = (
+            f"- {event['ts']} {event['event']} "
+            f"node={event.get('node')} payload={event.get('payload')}"
+        )
+        typer.echo(
+            event_line
+        )
 
 
 @db_app.command("init")
@@ -234,6 +242,27 @@ def _run_index(settings: Settings, limit: int, batch_size: int, force: bool) -> 
         f"index.summary selected={summary.selected_chunks} indexed={summary.indexed_chunks} "
         f"model={summary.model_name} config_hash={summary.config_hash[:12]} "
         f"device={summary.device} force={summary.force}"
+    )
+
+
+def _print_debug_summary(state: dict[str, Any]) -> None:
+    trace_id = state.get("trace_id", "unknown")
+    route = state.get("route_action", "unknown")
+    evidence_status = state.get("evidence_status", "unknown")
+    if hasattr(evidence_status, "value"):
+        evidence_status = evidence_status.value
+    retrieved_children = len(state.get("retrieved_child_ids", []))
+    selected_parents = len(state.get("selected_parent_ids", []))
+    context_packets = [packet["source_id"] for packet in state.get("context_packets", [])]
+    final_action = state.get("final_action", "unknown")
+    typer.echo(
+        f"\nTrace: {trace_id}\n"
+        f"Route: {route}\n"
+        f"Retrieved children: {retrieved_children}\n"
+        f"Selected parents: {selected_parents}\n"
+        f"Evidence status: {evidence_status}\n"
+        f"Context packets: {', '.join(context_packets) if context_packets else '(none)'}\n"
+        f"Final action: {final_action}"
     )
 
 
