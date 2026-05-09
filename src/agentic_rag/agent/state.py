@@ -26,6 +26,7 @@ class AgentState(TypedDict, total=False):
     route_reason_public: str
     rewritten_query: str
     retrieval_variant: RetrievalVariant
+    forced_retrieval_variant: RetrievalVariant
     retrieval_filters: dict[str, Any]
     tool_name: str
     tool_args: dict[str, Any]

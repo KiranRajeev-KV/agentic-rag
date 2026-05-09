@@ -20,6 +20,7 @@ class BgeM3DenseEmbedder:
         self.settings = settings
         self.device = self._resolve_device(settings.bge_device)
         self._model: BGEM3FlagModel | None = None
+        self._model_init_error: str | None = None
 
     def encode(
         self, texts: list[str], batch_size: int = 16, max_length: int = 2048
@@ -47,15 +48,23 @@ class BgeM3DenseEmbedder:
         )
 
     def _get_model(self) -> BGEM3FlagModel:
+        if self._model_init_error is not None:
+            raise RuntimeError(self._model_init_error)
         if self._model is None:
-            self._model = BGEM3FlagModel(
-                model_name_or_path=self.settings.bge_model_name,
-                use_fp16=self.device.startswith("cuda"),
-                devices=self.device,
-                return_dense=True,
-                return_sparse=False,
-                return_colbert_vecs=False,
-            )
+            try:
+                self._model = BGEM3FlagModel(
+                    model_name_or_path=self.settings.bge_model_name,
+                    use_fp16=self.device.startswith("cuda"),
+                    devices=self.device,
+                    return_dense=True,
+                    return_sparse=False,
+                    return_colbert_vecs=False,
+                )
+            except Exception as err:  # noqa: BLE001
+                self._model_init_error = (
+                    f"Failed to initialize embedding model {self.settings.bge_model_name}: {err}"
+                )
+                raise RuntimeError(self._model_init_error) from err
         return self._model
 
     @staticmethod

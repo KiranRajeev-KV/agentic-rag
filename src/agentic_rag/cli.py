@@ -7,8 +7,10 @@ import typer
 
 from agentic_rag.agent import AskGraphRunner
 from agentic_rag.config import Settings, get_settings
+from agentic_rag.evals import EvalRunner
 from agentic_rag.ingest.indexing import ChildChunkIndexer
 from agentic_rag.ingest.pipeline import IngestPipeline
+from agentic_rag.retrieval.types import RetrievalVariant
 from agentic_rag.storage.bootstrap import initialize_storage
 from agentic_rag.storage.sqlite import SQLiteStore
 from agentic_rag.tools.arxiv_tools import ArxivToolset
@@ -133,7 +135,16 @@ def corpus_discover_command(
 def eval_run_command(
     variant: Annotated[str, typer.Option("--variant")] = "parent_child",
 ) -> None:
-    typer.echo(f"[stub] eval run requested for variant={variant}")
+    settings = get_settings()
+    initialize_storage(settings=settings, init_qdrant=False)
+    eval_runner = EvalRunner(settings=settings)
+    chosen_variant = RetrievalVariant(variant)
+    summary = eval_runner.run_variant(chosen_variant)
+    typer.echo(
+        f"eval.summary variant={summary['variant']} cases={summary['cases']} "
+        f"raw_score={summary['raw_score']:.2f} normalized={summary['normalized_score']:.2f} "
+        f"hard_fail_refusal={summary['hard_fail_refusal']}"
+    )
 
 
 @eval_app.command("compare")
@@ -141,7 +152,18 @@ def eval_compare_command(
     baseline: Annotated[str, typer.Option("--baseline")] = "child_only",
     candidate: Annotated[str, typer.Option("--candidate")] = "parent_child",
 ) -> None:
-    typer.echo(f"[stub] eval compare requested: baseline={baseline}, candidate={candidate}")
+    settings = get_settings()
+    eval_runner = EvalRunner(settings=settings)
+    comparison = eval_runner.compare(
+        baseline=RetrievalVariant(baseline),
+        candidate=RetrievalVariant(candidate),
+    )
+    typer.echo(
+        f"eval.compare baseline={comparison['baseline']} candidate={comparison['candidate']} "
+        f"baseline_score={comparison['baseline_score']:.2f} "
+        f"candidate_score={comparison['candidate_score']:.2f} "
+        f"delta={comparison['delta_score']:+.2f}"
+    )
 
 
 @trace_app.command("list")
@@ -192,9 +214,7 @@ def trace_show_command(trace_id: str) -> None:
             f"- {event['ts']} {event['event']} "
             f"node={event.get('node')} payload={event.get('payload')}"
         )
-        typer.echo(
-            event_line
-        )
+        typer.echo(event_line)
 
 
 @db_app.command("init")

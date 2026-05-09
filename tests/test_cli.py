@@ -182,3 +182,42 @@ def test_index_with_mocked_indexer(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "index.progress total_chunks=10 pending=4 up_to_date=6" in result.stdout
     assert "index.summary selected=2 indexed=2 model=BAAI/bge-m3" in result.stdout
+
+
+def test_eval_commands_with_mocked_runner(monkeypatch) -> None:
+    class _FakeEvalRunner:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run_variant(self, variant):  # noqa: ANN001
+            assert str(variant) in {"child_only", "parent_child"}
+            return {
+                "variant": str(variant),
+                "cases": 14,
+                "raw_score": 100.0,
+                "normalized_score": 71.4,
+                "hard_fail_refusal": False,
+            }
+
+        def compare(self, baseline, candidate):  # noqa: ANN001
+            return {
+                "baseline": str(baseline),
+                "candidate": str(candidate),
+                "baseline_score": 60.0,
+                "candidate_score": 70.0,
+                "delta_score": 10.0,
+            }
+
+    monkeypatch.setattr(cli_module, "EvalRunner", _FakeEvalRunner)
+    monkeypatch.setattr(cli_module, "initialize_storage", lambda settings, init_qdrant: None)
+
+    run_result = runner.invoke(app, ["eval", "run", "--variant", "child_only"])
+    assert run_result.exit_code == 0
+    assert "eval.summary variant=child_only cases=14" in run_result.stdout
+
+    compare_result = runner.invoke(
+        app,
+        ["eval", "compare", "--baseline", "child_only", "--candidate", "parent_child"],
+    )
+    assert compare_result.exit_code == 0
+    assert "eval.compare baseline=child_only candidate=parent_child" in compare_result.stdout

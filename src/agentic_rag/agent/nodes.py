@@ -65,7 +65,10 @@ class AgentNodes:
         }
 
     def retrieve(self, state: AgentState) -> AgentState:
-        variant = state.get("retrieval_variant", RetrievalVariant.parent_child)
+        variant = state.get(
+            "forced_retrieval_variant",
+            state.get("retrieval_variant", RetrievalVariant.parent_child),
+        )
         try:
             result = self.deps.retrieval_service.run(
                 query=state.get("rewritten_query", state["raw_user_query"]),

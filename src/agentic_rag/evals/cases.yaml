@@ -1,0 +1,88 @@
+- id: c01_direct_memory
+  question: "What do recent papers say about agent memory?"
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c02_direct_planning
+  question: "How do papers describe planning in agent workflows?"
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c03_direct_tool_use
+  question: "How is tool-use reliability measured in recent agent papers?"
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c04_compare_arch
+  question: "Compare memory-centric and planning-centric agent designs."
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c05_compare_eval
+  question: "What evaluation tradeoffs appear across these papers?"
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c06_method_specific
+  question: "What methods are used to reduce hallucinations in agentic RAG systems?"
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c07_limitation_specific
+  question: "What limitations do papers report for long-context agents?"
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c08_memory_followup
+  question: "Given our previous discussion, summarize the last answer focus."
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c09_memory_followup_2
+  question: "Continue from the previous point and list key evidence."
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: c10_ambiguous_best
+  question: "Which is better?"
+  expected_route: "CLARIFY"
+  expected_final_action: "CLARIFY"
+  should_clarify: true
+  should_cite_sources: false
+
+- id: c11_ambiguous_reference
+  question: "What about it?"
+  expected_route: "CLARIFY"
+  expected_final_action: "CLARIFY"
+  should_clarify: true
+  should_cite_sources: false
+
+- id: c12_refusal_out_of_domain
+  question: "What is the weather in Bangalore tomorrow?"
+  expected_route: "REFUSE"
+  expected_final_action: "REFUSE"
+  should_refuse: true
+  should_cite_sources: false
+
+- id: c13_refusal_missing_answer
+  question: "Give the exact 2027 benchmark results from papers not in this corpus."
+  expected_route: "REFUSE"
+  expected_final_action: "REFUSE"
+  should_refuse: true
+  should_cite_sources: false
+
+- id: c14_tool_metadata
+  question: "Search arXiv for recent papers on agent memory orchestration."
+  expected_route: "TOOL"
+  expected_final_action: "ANSWER_FROM_TOOL"
+  expected_tool: "arxiv_search"
+  should_cite_sources: false

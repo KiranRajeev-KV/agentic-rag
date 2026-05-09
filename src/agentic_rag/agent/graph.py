@@ -4,6 +4,7 @@ from langgraph.graph import END, START, StateGraph
 
 from agentic_rag.config import Settings
 from agentic_rag.retrieval.service import RetrievalService
+from agentic_rag.retrieval.types import RetrievalVariant
 from agentic_rag.storage.repositories import SemanticMemoryRepository
 from agentic_rag.storage.sqlite import SQLiteStore
 from agentic_rag.tools.arxiv_tools import ArxivToolset
@@ -27,7 +28,12 @@ class AskGraphRunner:
         self.trace_writer = deps.trace_writer
         self.graph = self._compile_graph()
 
-    def run(self, query: str, thread_id: str = "default") -> AgentState:
+    def run(
+        self,
+        query: str,
+        thread_id: str = "default",
+        retrieval_variant: RetrievalVariant | None = None,
+    ) -> AgentState:
         trace = self.trace_writer.start(thread_id=thread_id, run_mode="cli")
         initial_state: AgentState = {
             "thread_id": thread_id,
@@ -36,6 +42,8 @@ class AskGraphRunner:
             "raw_user_query": query,
             "normalized_query": query.strip(),
         }
+        if retrieval_variant is not None:
+            initial_state["forced_retrieval_variant"] = retrieval_variant
         try:
             final_state = self.graph.invoke(initial_state)
         except Exception as err:  # noqa: BLE001
