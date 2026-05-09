@@ -35,7 +35,7 @@ class ChildChunkIndexer:
 
     def index_unembedded_chunks(
         self,
-        limit: int = 500,
+        limit: int | None = None,
         batch_size: int = 32,
         force: bool = False,
     ) -> IndexSummary:
@@ -54,58 +54,61 @@ class ChildChunkIndexer:
                 config_hash=config_hash,
             )
         )
-        rows = self.chunk_repo.fetch_chunks_for_indexing(
-            limit=limit,
-            model_name=self.settings.bge_model_name,
-            config_hash=config_hash,
-            force=force,
-        )
-        if not rows:
-            return IndexSummary(
-                total_chunks=total_chunks,
-                pending_chunks=pending_chunks,
-                selected_chunks=0,
-                indexed_chunks=0,
-                skipped_as_up_to_date=total_chunks - pending_chunks,
-                force=force,
+        selected_chunks = 0
+        indexed_chunks = 0
+        skipped_as_up_to_date = total_chunks - pending_chunks
+
+        while True:
+            rows = self.chunk_repo.fetch_chunks_for_indexing(
+                limit=limit,
                 model_name=self.settings.bge_model_name,
                 config_hash=config_hash,
-                device=self.embedder.device,
+                force=force,
             )
+            if not rows:
+                break
 
-        texts = [row["chunk_text"] for row in rows]
-        batch = self.embedder.encode(texts=texts, batch_size=batch_size)
+            texts = [row["chunk_text"] for row in rows]
+            batch = self.embedder.encode(texts=texts, batch_size=batch_size)
 
-        points: list[models.PointStruct] = []
-        for row, vector in zip(rows, batch.dense_vectors, strict=False):
-            points.append(
-                models.PointStruct(
-                    id=row["chunk_id"],
-                    vector=vector,
-                    payload=_payload_from_row(row),
+            points: list[models.PointStruct] = []
+            for row, vector in zip(rows, batch.dense_vectors, strict=False):
+                points.append(
+                    models.PointStruct(
+                        id=row["chunk_id"],
+                        vector=vector,
+                        payload=_payload_from_row(row),
+                    )
                 )
-            )
 
-        client.upsert(
-            collection_name=self.settings.qdrant_collection,
-            points=points,
-            wait=True,
-        )
-        self.chunk_repo.mark_embedded(
-            chunk_ids=[row["chunk_id"] for row in rows],
-            model_name=batch.model_name,
-            config_hash=config_hash,
-        )
+            client.upsert(
+                collection_name=self.settings.qdrant_collection,
+                points=points,
+                wait=True,
+            )
+            self.chunk_repo.mark_embedded(
+                chunk_ids=[row["chunk_id"] for row in rows],
+                model_name=batch.model_name,
+                config_hash=config_hash,
+            )
+            selected_chunks += len(rows)
+            indexed_chunks += len(points)
+
+            if force:
+                break
+            if limit is not None and selected_chunks >= limit:
+                break
+
         return IndexSummary(
             total_chunks=total_chunks,
             pending_chunks=pending_chunks,
-            selected_chunks=len(rows),
-            indexed_chunks=len(points),
-            skipped_as_up_to_date=total_chunks - pending_chunks,
+            selected_chunks=selected_chunks,
+            indexed_chunks=indexed_chunks,
+            skipped_as_up_to_date=skipped_as_up_to_date,
             force=force,
-            model_name=batch.model_name,
+            model_name=self.settings.bge_model_name,
             config_hash=config_hash,
-            device=batch.device,
+            device=self.embedder.device,
         )
 
     def _embedding_config_hash(self) -> str:

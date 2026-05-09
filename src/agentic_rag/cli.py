@@ -86,8 +86,9 @@ def ask_command(
 @app.command("index")
 def index_command(
     limit: Annotated[
-        int, typer.Option("--limit", min=1, help="Max chunks to index this run.")
-    ] = 500,
+        int | None,
+        typer.Option("--limit", min=1, help="Max chunks to index. Omit to index all pending."),
+    ] = None,
     batch_size: Annotated[
         int,
         typer.Option("--batch-size", min=1, help="Embedding batch size for BGEM3 dense encoding."),

@@ -206,7 +206,7 @@ class ChunkRepository:
 
     def fetch_chunks_for_indexing(
         self,
-        limit: int,
+        limit: int | None,
         model_name: str,
         config_hash: str,
         force: bool = False,
@@ -224,7 +224,8 @@ class ChunkRepository:
                 "OR c.indexed_embedding_text_hash != c.embedding_text_hash)"
             )
             params.extend([model_name, config_hash])
-        params.append(limit)
+        if limit is not None:
+            params.append(limit)
         rows = self.store.fetchall(
             f"""
             SELECT
@@ -253,7 +254,7 @@ class ChunkRepository:
             JOIN papers p ON p.paper_id = c.paper_id
             WHERE 1=1 {predicate}
             ORDER BY p.ingested_at DESC, c.chunk_index ASC
-            LIMIT ?
+            {"LIMIT ?" if limit is not None else ""}
             """,
             tuple(params),
         )

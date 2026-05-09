@@ -230,3 +230,87 @@ def test_child_chunk_indexing_idempotent_skip_and_force(tmp_path: Path, monkeypa
     forced = indexer.index_unembedded_chunks(limit=100, batch_size=8, force=True)
     assert forced.pending_chunks == 1
     assert forced.indexed_chunks == 1
+
+
+def test_force_without_limit_runs_single_full_pass(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.sqlite"))
+    monkeypatch.setenv("APP_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("APP_PDF_DIR", str(tmp_path / "raw_pdfs"))
+    monkeypatch.setenv("APP_LOG_JSONL", str(tmp_path / "runs" / "logs" / "app.jsonl"))
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def upsert(self, collection_name, points, wait) -> None:  # noqa: ANN001
+            del collection_name, points, wait
+            self.calls += 1
+
+    class _FakeEmbedder:
+        device = "cpu"
+
+        def encode(
+            self, texts: list[str], batch_size: int = 32, max_length: int = 2048
+        ) -> EmbeddingBatch:  # noqa: ARG002
+            return EmbeddingBatch(
+                dense_vectors=[[0.1] * 1024 for _ in texts],
+                model_name="BAAI/bge-m3",
+                device="cpu",
+            )
+
+    fake_client = _FakeClient()
+    monkeypatch.setattr("agentic_rag.ingest.indexing.get_client", lambda url: fake_client)  # noqa: ARG005
+    monkeypatch.setattr(
+        "agentic_rag.ingest.indexing.ensure_child_chunk_collection",
+        lambda client, collection_name: None,  # noqa: ARG005
+    )
+
+    indexer = ChildChunkIndexer(settings=settings, embedder=_FakeEmbedder())
+    monkeypatch.setattr(indexer.chunk_repo, "count_chunks_total", lambda: 1)
+    monkeypatch.setattr(
+        indexer.chunk_repo,
+        "count_chunks_pending",
+        lambda model_name, config_hash: 1,
+    )
+
+    calls = {"fetch": 0}
+    sample_row = {
+        "chunk_id": "chunk_1",
+        "parent_id": "parent_1",
+        "paper_id": "paper_1",
+        "arxiv_id": "2501.00001",
+        "title": "Title",
+        "primary_category": "cs.AI",
+        "categories": '["cs.AI"]',
+        "published_at": None,
+        "updated_at": None,
+        "section_path": "1 Intro",
+        "section_type": "content",
+        "content_type": "text",
+        "page_start": 1,
+        "page_end": 1,
+        "chunk_index": 0,
+        "token_count": 10,
+        "chunk_text": "hello world",
+    }
+
+    def _fetch_once(**kwargs):  # noqa: ANN003
+        del kwargs
+        if calls["fetch"] > 0:
+            raise AssertionError("force+limit=None should not fetch more than once")
+        calls["fetch"] += 1
+        return [sample_row]
+
+    monkeypatch.setattr(indexer.chunk_repo, "fetch_chunks_for_indexing", _fetch_once)
+    monkeypatch.setattr(
+        indexer.chunk_repo,
+        "mark_embedded",
+        lambda chunk_ids, model_name, config_hash: None,  # noqa: ARG005
+    )
+
+    summary = indexer.index_unembedded_chunks(limit=None, batch_size=8, force=True)
+    assert summary.selected_chunks == 1
+    assert summary.indexed_chunks == 1
+    assert fake_client.calls == 1
