@@ -14,6 +14,7 @@ To be implemented in subsequent milestones.
 cp .env.example .env
 uv sync
 docker compose up -d qdrant
+uv run app db init
 uv run app --help
 ```
 

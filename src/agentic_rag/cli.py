@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import Annotated
 
 import typer
 
 from agentic_rag.config import get_settings
+from agentic_rag.storage.bootstrap import initialize_storage
+from agentic_rag.storage.repositories import TraceRepository
+from agentic_rag.storage.sqlite import SQLiteStore
 
 app = typer.Typer(help="Agentic RAG local-first CLI.")
 eval_app = typer.Typer(help="Run evaluation and ablation commands.")
@@ -57,17 +61,76 @@ def eval_compare_command(
 def trace_list_command(
     last: Annotated[int, typer.Option("--last", min=1)] = 10,
 ) -> None:
-    typer.echo(f"[stub] trace list requested with --last={last}")
+    settings = get_settings()
+    store = SQLiteStore(settings.app_db_path)
+    trace_repo = TraceRepository(store)
+    try:
+        traces = trace_repo.list_recent(limit=last)
+    except sqlite3.OperationalError as err:
+        typer.echo("No trace tables found. Run `app db init` first.")
+        raise typer.Exit(code=1) from err
+
+    if not traces:
+        typer.echo("No traces found.")
+        return
+
+    for trace in traces:
+        typer.echo(
+            f"{trace['trace_id']} thread={trace['thread_id']} turn={trace['turn_id']} "
+            f"mode={trace['run_mode']} started={trace['started_at']}"
+        )
 
 
 @trace_app.command("show")
 def trace_show_command(trace_id: str) -> None:
-    typer.echo(f"[stub] trace show requested for trace_id={trace_id}")
+    settings = get_settings()
+    store = SQLiteStore(settings.app_db_path)
+    rows = store.fetchall(
+        """
+        SELECT trace_id, thread_id, turn_id, run_mode, started_at, completed_at
+        FROM traces
+        WHERE trace_id = ?
+        """,
+        (trace_id,),
+    )
+    if not rows:
+        typer.echo(f"Trace not found: {trace_id}")
+        raise typer.Exit(code=1)
+
+    trace = dict(rows[0])
+    typer.echo(
+        f"trace_id={trace['trace_id']}\n"
+        f"thread_id={trace['thread_id']}\n"
+        f"turn_id={trace['turn_id']}\n"
+        f"run_mode={trace['run_mode']}\n"
+        f"started_at={trace['started_at']}\n"
+        f"completed_at={trace['completed_at']}"
+    )
+
+
+@db_app.command("init")
+def db_init_command(
+    with_qdrant: Annotated[bool, typer.Option("--with-qdrant")] = False,
+) -> None:
+    settings = get_settings()
+    initialize_storage(settings=settings, init_qdrant=with_qdrant)
+    target = "sqlite+qdrant" if with_qdrant else "sqlite"
+    typer.echo(f"Initialized storage: {target}")
 
 
 @db_app.command("reset")
-def db_reset_command() -> None:
-    typer.echo("[stub] db reset requested")
+def db_reset_command(
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm destructive reset")] = False,
+) -> None:
+    if not yes:
+        typer.echo("Refusing to reset without --yes")
+        raise typer.Exit(code=1)
+
+    settings = get_settings()
+    if settings.app_db_path.exists():
+        settings.app_db_path.unlink()
+    initialize_storage(settings=settings, init_qdrant=False)
+    typer.echo(f"Reset SQLite DB at {settings.app_db_path}")
 
 
 if __name__ == "__main__":
