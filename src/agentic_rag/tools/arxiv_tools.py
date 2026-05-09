@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -67,6 +70,8 @@ class ArxivToolset:
 
     def _get_recent(self, payload: ArxivGetRecentInput) -> ArxivToolOutput:
         query = payload.query_filter if payload.query_filter else "*"
+        date_to = datetime.now(UTC).date()
+        date_from = date_to - timedelta(days=payload.days_back)
         try:
             papers = self._client.search(
                 query=query,
@@ -74,6 +79,8 @@ class ArxivToolset:
                 max_results=payload.max_results,
                 sort_by=ArxivSortBy.submitted_date,
                 sort_order=ArxivSortOrder.descending,
+                date_from=date_from,
+                date_to=date_to,
             )
             return ArxivToolOutput(status=ToolStatus.ok, papers=papers, errors=[])
         except Exception as err:  # noqa: BLE001
@@ -83,7 +90,7 @@ class ArxivToolset:
         self,
         tool_name: str,
         payload: dict[str, object],
-        handler: callable,
+        handler: Callable[[Any], ArxivToolOutput],
         payload_model: object,
     ) -> ArxivToolOutput:
         cache_key = _stable_cache_key(tool_name=tool_name, payload=payload)

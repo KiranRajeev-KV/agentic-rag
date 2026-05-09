@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from agentic_rag.config import get_settings
+from agentic_rag.ingest.pipeline import IngestPipeline
 from agentic_rag.storage.bootstrap import initialize_storage
 from agentic_rag.storage.repositories import TraceRepository
 from agentic_rag.storage.sqlite import SQLiteStore
@@ -32,8 +33,23 @@ def main() -> None:
 @app.command("ingest")
 def ingest_command(
     limit: Annotated[int, typer.Option("--limit", min=1)] = 20,
+    days_back: Annotated[int, typer.Option("--days-back", min=1, max=365)] = 90,
 ) -> None:
-    typer.echo(f"[stub] ingest requested with --limit={limit}")
+    settings = get_settings()
+    initialize_storage(settings=settings, init_qdrant=False)
+    pipeline = IngestPipeline(settings=settings)
+    summary = pipeline.run(limit=limit, days_back=days_back)
+    typer.echo(
+        "ingest.summary "
+        f"requested={summary.requested_limit} discovered={summary.discovered} "
+        f"downloaded={summary.downloaded} parsed={summary.parsed} "
+        f"parse_failed={summary.parse_failed} download_failed={summary.download_failed} "
+        f"skipped={summary.skipped}"
+    )
+    if summary.errors:
+        typer.echo("ingest.errors:")
+        for err in summary.errors[:10]:
+            typer.echo(f"- {err}")
 
 
 @app.command("ask")

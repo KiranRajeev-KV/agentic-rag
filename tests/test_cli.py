@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 import agentic_rag.cli as cli_module
 from agentic_rag.cli import app
 from agentic_rag.config import get_settings
+from agentic_rag.ingest.pipeline import IngestSummary
 from agentic_rag.tools.schemas import ArxivPaperMetadata, ArxivToolOutput, ToolStatus
 
 runner = CliRunner()
@@ -16,10 +17,31 @@ def test_help_renders() -> None:
     assert "Agentic RAG local-first CLI" in result.stdout
 
 
-def test_ingest_stub() -> None:
+def test_ingest_with_mocked_pipeline(monkeypatch) -> None:
+    class _FakePipeline:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run(self, limit: int, days_back: int = 90) -> IngestSummary:
+            assert limit == 20
+            assert days_back == 90
+            return IngestSummary(
+                requested_limit=20,
+                discovered=3,
+                downloaded=3,
+                parsed=2,
+                parse_failed=1,
+                download_failed=0,
+                skipped=0,
+                errors=[],
+            )
+
+    monkeypatch.setattr(cli_module, "IngestPipeline", _FakePipeline)
+    monkeypatch.setattr(cli_module, "initialize_storage", lambda settings, init_qdrant: None)
+
     result = runner.invoke(app, ["ingest", "--limit", "20"])
     assert result.exit_code == 0
-    assert "[stub] ingest requested with --limit=20" in result.stdout
+    assert "ingest.summary requested=20 discovered=3 downloaded=3 parsed=2" in result.stdout
 
 
 def test_db_init_and_trace_list(tmp_path: Path, monkeypatch) -> None:
