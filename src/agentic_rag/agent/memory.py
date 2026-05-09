@@ -22,15 +22,23 @@ class MemoryService:
             for row in rows
         ]
 
-    def write_decision(self, key: str, value: str, source_turn_id: str) -> str:
+    def write(
+        self,
+        *,
+        kind: str,
+        key: str,
+        value: str,
+        confidence: float,
+        source_turn_id: str,
+    ) -> str:
         memory_id = f"mem_{uuid.uuid4().hex[:10]}"
         self.repo.upsert(
             memory_id=memory_id,
             namespace=self.namespace,
-            kind="decision",
+            kind=kind,
             key=key,
             value=value,
-            confidence=0.8,
+            confidence=confidence,
             source_turn_id=source_turn_id,
         )
         return memory_id
