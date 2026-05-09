@@ -1,25 +1,25 @@
 # Decisions
 
-## Parent-child retrieval with parent scoring
-- Decision: Use child chunk vector search plus parent grouping and parent scoring.
-- Why: Improves section-level grounding while keeping vector index on smaller child chunks.
-- Implementation details: Child chunks are embedded/indexed; parent score uses max child score, capped support bonus, section adjustment, and references penalty.
-- Tradeoff: More moving parts than child-only baseline.
+## OpenAI Embeddings (`text-embedding-3-small`, 1536)
+- Decision: Use OpenAI embeddings for child chunk indexing and query embedding.
+- Why: Aligns with locked implementation context and keeps embedding behavior consistent between indexing and retrieval.
+- Implementation details: `EMBEDDING_PROVIDER=openai`, `EMBEDDING_MODEL=text-embedding-3-small`, `EMBEDDING_DIMENSIONS=1536`; Qdrant collection vectors are 1536 cosine.
+- Tradeoff: Requires network/API key and incurs usage cost.
 
-## Dense-only BGE-M3 embeddings
-- Decision: Use `BAAI/bge-m3` dense mode only.
-- Why: Locked assignment scope and local-first setup.
-- Implementation details: Embedding uses `BGEM3FlagModel` dense vectors; no sparse or colbert outputs.
-- Tradeoff: Misses potential gains from hybrid/sparse retrieval.
+## OpenAI LLM Control Plane (`gpt-5-nano`)
+- Decision: Use `gpt-5-nano` for router, evidence classification, and answer generation through a small OpenAI client abstraction.
+- Why: Keeps behavior-first control logic structured while preserving deterministic fallbacks for reliability and tests.
+- Implementation details: JSON-structured outputs validated with Pydantic schemas; fallback heuristics activate when API key/call is unavailable.
+- Tradeoff: Runtime behavior depends on API availability; fallbacks are less nuanced.
 
-## Storage split
-- Decision: Qdrant for vectors, SQLite for relational/docstore/memory/evals/traces.
-- Why: Keeps vector ops fast and metadata inspectable.
-- Implementation details: Qdrant payload is compact metadata; parent text stays in SQLite.
-- Tradeoff: Requires coordination across two stores.
+## Parent-Child Retrieval With Parent Scoring
+- Decision: Keep child-only baseline and parent-child candidate with parent scoring.
+- Why: This is the core retrieval technique under evaluation and ablation.
+- Implementation details: Child vectors in Qdrant, grouped by parent, scored with capped support bonus and section adjustments.
+- Tradeoff: More orchestration complexity than pure child-only retrieval.
 
-## Ingest/index split
-- Decision: `app ingest` writes SQLite corpus artifacts; `app index` handles embeddings+Qdrant.
-- Why: Prevents accidental heavy model/index work and improves reproducibility.
-- Implementation details: Optional `app ingest --index` exists, default is SQLite-only.
-- Tradeoff: Two-step workflow for first-time setup.
+## Ingest/Index Split
+- Decision: Preserve explicit split: `app ingest` (SQLite corpus artifacts) and `app index` (embeddings + Qdrant).
+- Why: Keeps heavy embedding/index work explicit and reproducible.
+- Implementation details: Optional `app ingest --index` remains opt-in convenience.
+- Tradeoff: First-time setup is two steps unless convenience flag is used.

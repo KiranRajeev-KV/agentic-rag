@@ -29,6 +29,11 @@ uv run app ask "What do recent papers say about agent memory?" --debug
 uv run app --help
 ```
 
+Embedding migration note:
+- This repo now uses OpenAI `text-embedding-3-small` (1536 dims).
+- Old Qdrant collections built with 1024-dim vectors are incompatible.
+- Recreate/reset local Qdrant storage before first reindex after migration.
+
 ## 4. Demo commands
 
 ```bash
@@ -44,13 +49,13 @@ uv run app trace list --last 10
 ## 5. Architecture overview
 
 - Ingest: arXiv discovery/filtering -> PDF download -> Docling parse -> HybridChunker parent/child model in SQLite.
-- Index: BGE-M3 dense embeddings for child chunks -> Qdrant upsert with compact payload.
-- Ask: LangGraph state graph with structured router, retrieval/tool/clarify/refuse actions, evidence gate, citation checks, memory and trace writes.
+- Index: OpenAI `text-embedding-3-small` child embeddings (1536 dims) -> Qdrant upsert with compact payload.
+- Ask: LangGraph state graph with LLM-structured router (`gpt-5-nano`), retrieval/tool/clarify/refuse actions, evidence classification, citation checks, memory and trace writes.
 - Eval: 14 curated behavior-first cases and child-only vs parent-child ablation compare.
 
 ## 6. Locked design decisions
 
-See `agentic_rag_implementation_context.md` and `docs/DECISIONS.md` (to be authored).
+See `agentic_rag_implementation_context.md` and `docs/DECISIONS.md`.
 
 ## 7. Corpus and ingestion
 

@@ -8,6 +8,14 @@ docker compose up -d qdrant
 uv run app db init
 ```
 
+## One-time embedding migration note
+If you previously indexed with 1024-dim vectors, clear local Qdrant storage and recreate:
+```bash
+docker compose down
+rm -rf data/qdrant
+docker compose up -d qdrant
+```
+
 ## Ingest + index (small demo)
 ```bash
 uv run app ingest --limit 20
