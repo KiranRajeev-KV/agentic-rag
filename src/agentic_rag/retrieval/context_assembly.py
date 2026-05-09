@@ -103,7 +103,7 @@ def _highlighted_text(chunk_ids: list[str], chunk_rows: dict[str, dict[str, obje
         text = str(row.get("chunk_text", "")).strip()
         if not text:
             continue
-        lines.append(f"[{chunk_id}] {text[:700]}")
+        lines.append(text[:700])
     return "\n".join(lines)
 
 
