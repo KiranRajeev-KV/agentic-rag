@@ -23,9 +23,10 @@ def test_ingest_with_mocked_pipeline(monkeypatch) -> None:
         def __init__(self, settings) -> None:  # noqa: ANN001
             self.settings = settings
 
-        def run(self, limit: int, days_back: int = 90) -> IngestSummary:
+        def run(self, limit: int, days_back: int = 90, force: bool = False) -> IngestSummary:
             assert limit == 20
             assert days_back == 90
+            assert force is False
             return IngestSummary(
                 requested_limit=20,
                 discovered=3,
@@ -50,7 +51,8 @@ def test_ingest_with_optional_index(monkeypatch) -> None:
         def __init__(self, settings) -> None:  # noqa: ANN001
             self.settings = settings
 
-        def run(self, limit: int, days_back: int = 90) -> IngestSummary:
+        def run(self, limit: int, days_back: int = 90, force: bool = False) -> IngestSummary:
+            assert force is False
             return IngestSummary(
                 requested_limit=limit,
                 discovered=1,
@@ -77,6 +79,32 @@ def test_ingest_with_optional_index(monkeypatch) -> None:
     result = runner.invoke(app, ["ingest", "--limit", "20", "--index"])
     assert result.exit_code == 0
     assert calls["indexed"] is True
+
+
+def test_ingest_force_flag(monkeypatch) -> None:
+    class _FakePipeline:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def run(self, limit: int, days_back: int = 90, force: bool = False) -> IngestSummary:
+            assert limit == 5
+            assert days_back == 90
+            assert force is True
+            return IngestSummary(
+                requested_limit=limit,
+                discovered=1,
+                downloaded=1,
+                parsed=1,
+                parse_failed=0,
+                download_failed=0,
+                skipped=0,
+                errors=[],
+            )
+
+    monkeypatch.setattr(cli_module, "IngestPipeline", _FakePipeline)
+    monkeypatch.setattr(cli_module, "initialize_storage", lambda settings, init_qdrant: None)
+    result = runner.invoke(app, ["ingest", "--limit", "5", "--force"])
+    assert result.exit_code == 0
 
 
 def test_db_init_and_trace_list(tmp_path: Path, monkeypatch) -> None:
@@ -172,16 +200,16 @@ def test_index_with_mocked_indexer(monkeypatch) -> None:
                 indexed_chunks=2,
                 skipped_as_up_to_date=6,
                 force=True,
-                model_name="BAAI/bge-m3",
+                model_name="text-embedding-3-small",
                 config_hash="abcd1234efgh5678",
-                device="cpu",
+                dimensions=1536,
             )
 
     monkeypatch.setattr(cli_module, "ChildChunkIndexer", _FakeIndexer)
     result = runner.invoke(app, ["index", "--limit", "10", "--batch-size", "4", "--force"])
     assert result.exit_code == 0
     assert "index.progress total_chunks=10 pending=4 up_to_date=6" in result.stdout
-    assert "index.summary selected=2 indexed=2 model=BAAI/bge-m3" in result.stdout
+    assert "index.summary selected=2 indexed=2 model=text-embedding-3-small" in result.stdout
 
 
 def test_eval_commands_with_mocked_runner(monkeypatch) -> None:

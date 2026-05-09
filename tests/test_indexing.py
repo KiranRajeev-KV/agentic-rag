@@ -96,18 +96,16 @@ def test_child_chunk_indexing_with_fake_embedder(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr("agentic_rag.ingest.indexing.get_client", lambda url: fake_client)  # noqa: ARG005
     monkeypatch.setattr(
         "agentic_rag.ingest.indexing.ensure_child_chunk_collection",
-        lambda client, collection_name: None,  # noqa: ARG005
+        lambda client, collection_name, vector_size=1536: None,  # noqa: ARG005
     )
 
     class _FakeEmbedder:
-        device = "cpu"
-
-        def encode(
-            self, texts: list[str], batch_size: int = 32, max_length: int = 2048
-        ) -> EmbeddingBatch:  # noqa: ARG002
+        def encode(self, texts: list[str], batch_size: int = 32) -> EmbeddingBatch:  # noqa: ARG002
             assert texts == ["hello world"]
             return EmbeddingBatch(
-                dense_vectors=[[0.1] * 1024], model_name="BAAI/bge-m3", device="cpu"
+                dense_vectors=[[0.1] * 1536],
+                model_name="text-embedding-3-small",
+                dimensions=1536,
             )
 
     indexer = ChildChunkIndexer(settings=settings, embedder=_FakeEmbedder())
@@ -117,7 +115,8 @@ def test_child_chunk_indexing_with_fake_embedder(tmp_path: Path, monkeypatch) ->
     assert summary.pending_chunks == 1
     assert summary.selected_chunks == 1
     assert summary.indexed_chunks == 1
-    assert summary.model_name == "BAAI/bge-m3"
+    assert summary.model_name == "text-embedding-3-small"
+    assert summary.dimensions == 1536
     assert len(fake_client.points) == 1
 
 
@@ -184,7 +183,7 @@ def test_child_chunk_indexing_idempotent_skip_and_force(tmp_path: Path, monkeypa
                 "char_end": None,
                 "docling_ref_ids": "[]",
                 "embedding_text_hash": "same_hash",
-                "embedding_model": "BAAI/bge-m3",
+                "embedding_model": "text-embedding-3-small",
                 "embedding_config_hash": "config_hash",
                 "indexed_embedding_text_hash": "same_hash",
                 "last_indexed_at": "2026-01-01T00:00:00+00:00",
@@ -206,18 +205,16 @@ def test_child_chunk_indexing_idempotent_skip_and_force(tmp_path: Path, monkeypa
     monkeypatch.setattr("agentic_rag.ingest.indexing.get_client", lambda url: fake_client)  # noqa: ARG005
     monkeypatch.setattr(
         "agentic_rag.ingest.indexing.ensure_child_chunk_collection",
-        lambda client, collection_name: None,  # noqa: ARG005
+        lambda client, collection_name, vector_size=1536: None,  # noqa: ARG005
     )
 
     class _FakeEmbedder:
-        device = "cpu"
-
-        def encode(
-            self, texts: list[str], batch_size: int = 32, max_length: int = 2048
-        ) -> EmbeddingBatch:  # noqa: ARG002
+        def encode(self, texts: list[str], batch_size: int = 32) -> EmbeddingBatch:  # noqa: ARG002
             del texts
             return EmbeddingBatch(
-                dense_vectors=[[0.1] * 1024], model_name="BAAI/bge-m3", device="cpu"
+                dense_vectors=[[0.1] * 1536],
+                model_name="text-embedding-3-small",
+                dimensions=1536,
             )
 
     indexer = ChildChunkIndexer(settings=settings, embedder=_FakeEmbedder())
@@ -249,22 +246,18 @@ def test_force_without_limit_runs_single_full_pass(tmp_path: Path, monkeypatch) 
             self.calls += 1
 
     class _FakeEmbedder:
-        device = "cpu"
-
-        def encode(
-            self, texts: list[str], batch_size: int = 32, max_length: int = 2048
-        ) -> EmbeddingBatch:  # noqa: ARG002
+        def encode(self, texts: list[str], batch_size: int = 32) -> EmbeddingBatch:  # noqa: ARG002
             return EmbeddingBatch(
-                dense_vectors=[[0.1] * 1024 for _ in texts],
-                model_name="BAAI/bge-m3",
-                device="cpu",
+                dense_vectors=[[0.1] * 1536 for _ in texts],
+                model_name="text-embedding-3-small",
+                dimensions=1536,
             )
 
     fake_client = _FakeClient()
     monkeypatch.setattr("agentic_rag.ingest.indexing.get_client", lambda url: fake_client)  # noqa: ARG005
     monkeypatch.setattr(
         "agentic_rag.ingest.indexing.ensure_child_chunk_collection",
-        lambda client, collection_name: None,  # noqa: ARG005
+        lambda client, collection_name, vector_size=1536: None,  # noqa: ARG005
     )
 
     indexer = ChildChunkIndexer(settings=settings, embedder=_FakeEmbedder())
@@ -314,3 +307,24 @@ def test_force_without_limit_runs_single_full_pass(tmp_path: Path, monkeypatch) 
     assert summary.selected_chunks == 1
     assert summary.indexed_chunks == 1
     assert fake_client.calls == 1
+
+
+def test_indexing_config_hash_uses_provider_model_dimensions(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.sqlite"))
+    monkeypatch.setenv("APP_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("APP_PDF_DIR", str(tmp_path / "raw_pdfs"))
+    monkeypatch.setenv("APP_LOG_JSONL", str(tmp_path / "runs" / "logs" / "app.jsonl"))
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1536")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    indexer = ChildChunkIndexer(settings=settings, embedder=None)
+    h1 = indexer._embedding_config_hash()  # noqa: SLF001
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1024")
+    get_settings.cache_clear()
+    settings2 = get_settings()
+    indexer2 = ChildChunkIndexer(settings=settings2, embedder=None)
+    h2 = indexer2._embedding_config_hash()  # noqa: SLF001
+    assert h1 != h2

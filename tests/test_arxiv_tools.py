@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from agentic_rag.config import get_settings
 from agentic_rag.tools.arxiv_tools import ArxivToolset
 from agentic_rag.tools.schemas import (
+    ArxivGetRecentInput,
     ArxivLookupByIdInput,
     ArxivPaperMetadata,
     ArxivSearchInput,
@@ -76,6 +77,11 @@ def test_arxiv_search_schema_enforces_max_results() -> None:
     bad = {"query": "agent memory", "max_results": 15}
     with pytest.raises(ValidationError):
         ArxivSearchInput.model_validate(bad)
+
+
+def test_arxiv_get_recent_schema_enforces_max_results() -> None:
+    with pytest.raises(ValidationError):
+        ArxivGetRecentInput.model_validate({"max_results": 101})
 
 
 def test_lookup_error_returns_error_status(tmp_path: Path, monkeypatch) -> None:
