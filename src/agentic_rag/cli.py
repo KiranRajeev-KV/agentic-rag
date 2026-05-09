@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from agentic_rag.config import get_settings
+from agentic_rag.ingest.indexing import ChildChunkIndexer
 from agentic_rag.ingest.pipeline import IngestPipeline
 from agentic_rag.storage.bootstrap import initialize_storage
 from agentic_rag.storage.repositories import TraceRepository
@@ -60,6 +61,20 @@ def ask_command(
     typer.echo(f"[stub] ask requested: {question}")
     if debug:
         typer.echo("[stub] debug trace summary will be implemented in a later milestone.")
+
+
+@app.command("index")
+def index_command(
+    limit: Annotated[int, typer.Option("--limit", min=1)] = 500,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 32,
+) -> None:
+    settings = get_settings()
+    indexer = ChildChunkIndexer(settings=settings)
+    summary = indexer.index_unembedded_chunks(limit=limit, batch_size=batch_size)
+    typer.echo(
+        f"index.summary selected={summary.selected_chunks} indexed={summary.indexed_chunks} "
+        f"model={summary.model_name} device={summary.device}"
+    )
 
 
 @corpus_app.command("discover")

@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -93,3 +94,24 @@ def test_corpus_discover_with_mocked_tool(tmp_path: Path, monkeypatch) -> None:
     result = runner.invoke(app, ["corpus", "discover", "--limit", "20"])
     assert result.exit_code == 0
     assert "discovered=1 status=ok source=arxiv_api" in result.stdout
+
+
+def test_index_with_mocked_indexer(monkeypatch) -> None:
+    class _FakeIndexer:
+        def __init__(self, settings) -> None:  # noqa: ANN001
+            self.settings = settings
+
+        def index_unembedded_chunks(self, limit: int, batch_size: int):  # noqa: ANN001
+            assert limit == 10
+            assert batch_size == 4
+            return SimpleNamespace(
+                selected_chunks=2,
+                indexed_chunks=2,
+                model_name="BAAI/bge-m3",
+                device="cpu",
+            )
+
+    monkeypatch.setattr(cli_module, "ChildChunkIndexer", _FakeIndexer)
+    result = runner.invoke(app, ["index", "--limit", "10", "--batch-size", "4"])
+    assert result.exit_code == 0
+    assert "index.summary selected=2 indexed=2 model=BAAI/bge-m3 device=cpu" in result.stdout

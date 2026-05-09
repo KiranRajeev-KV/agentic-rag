@@ -166,6 +166,57 @@ class ChunkRepository:
             )
             conn.commit()
 
+    def fetch_chunks_for_indexing(
+        self, limit: int, embedded_model: str | None = None
+    ) -> list[dict[str, Any]]:
+        predicate = "AND (c.embedding_model IS NULL OR c.embedding_model = '')"
+        params: list[Any] = [limit]
+        if embedded_model:
+            predicate = (
+                "AND (c.embedding_model IS NULL OR c.embedding_model = '' "
+                "OR c.embedding_model != ?)"
+            )
+            params = [embedded_model, limit]
+        rows = self.store.fetchall(
+            f"""
+            SELECT
+              c.chunk_id,
+              c.parent_id,
+              c.paper_id,
+              c.chunk_index,
+              c.section_path,
+              c.section_type,
+              c.content_type,
+              c.page_start,
+              c.page_end,
+              c.token_count,
+              c.chunk_text,
+              p.arxiv_id,
+              p.title,
+              p.primary_category,
+              p.categories,
+              p.published_at,
+              p.updated_at
+            FROM child_chunks c
+            JOIN papers p ON p.paper_id = c.paper_id
+            WHERE 1=1 {predicate}
+            ORDER BY p.ingested_at DESC, c.chunk_index ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        return [dict(row) for row in rows]
+
+    def mark_embedded(self, chunk_ids: list[str], model_name: str) -> None:
+        if not chunk_ids:
+            return
+        with self.store.connect() as conn:
+            conn.executemany(
+                "UPDATE child_chunks SET embedding_model = ? WHERE chunk_id = ?",
+                [(model_name, chunk_id) for chunk_id in chunk_ids],
+            )
+            conn.commit()
+
 
 class SemanticMemoryRepository:
     def __init__(self, store: SQLiteStore) -> None:
