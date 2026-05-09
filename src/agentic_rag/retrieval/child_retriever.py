@@ -3,16 +3,16 @@ from __future__ import annotations
 from qdrant_client.http import models
 
 from agentic_rag.config import Settings
-from agentic_rag.ingest.embeddings import BgeM3DenseEmbedder
+from agentic_rag.ingest.embeddings import OpenAIEmbedder
 from agentic_rag.storage.qdrant import get_client
 
 from .types import ChildHit
 
 
 class ChildRetriever:
-    def __init__(self, settings: Settings, embedder: BgeM3DenseEmbedder | None = None) -> None:
+    def __init__(self, settings: Settings, embedder: OpenAIEmbedder | None = None) -> None:
         self.settings = settings
-        self.embedder = embedder or BgeM3DenseEmbedder(settings=settings)
+        self.embedder = embedder or OpenAIEmbedder(settings=settings)
         self.client = get_client(settings.qdrant_url)
 
     def retrieve(

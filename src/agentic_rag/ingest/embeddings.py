@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import torch
-from FlagEmbedding import BGEM3FlagModel
+from openai import OpenAI
 
 from agentic_rag.config import Settings
 
@@ -12,63 +11,44 @@ from agentic_rag.config import Settings
 class EmbeddingBatch:
     dense_vectors: list[list[float]]
     model_name: str
-    device: str
+    dimensions: int
 
 
-class BgeM3DenseEmbedder:
+class OpenAIEmbedder:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.device = self._resolve_device(settings.bge_device)
-        self._model: BGEM3FlagModel | None = None
-        self._model_init_error: str | None = None
+        self._client: OpenAI | None = None
 
-    def encode(
-        self, texts: list[str], batch_size: int = 16, max_length: int = 2048
-    ) -> EmbeddingBatch:
+    def encode(self, texts: list[str], batch_size: int = 32) -> EmbeddingBatch:
         if not texts:
             return EmbeddingBatch(
                 dense_vectors=[],
-                model_name=self.settings.bge_model_name,
-                device=self.device,
+                model_name=self.settings.embedding_model,
+                dimensions=self.settings.embedding_dimensions,
             )
-        model = self._get_model()
-        output = model.encode(
-            sentences=texts,
-            batch_size=batch_size,
-            max_length=max_length,
-            return_dense=True,
-            return_sparse=False,
-            return_colbert_vecs=False,
-        )
-        dense = output["dense_vecs"]
+        vectors: list[list[float]] = []
+        for idx in range(0, len(texts), batch_size):
+            chunk = texts[idx : idx + batch_size]
+            response = self._client_or_raise().embeddings.create(
+                model=self.settings.embedding_model,
+                input=chunk,
+                dimensions=self.settings.embedding_dimensions,
+            )
+            vectors.extend([list(item.embedding) for item in response.data])
         return EmbeddingBatch(
-            dense_vectors=dense.tolist(),
-            model_name=self.settings.bge_model_name,
-            device=self.device,
+            dense_vectors=vectors,
+            model_name=self.settings.embedding_model,
+            dimensions=self.settings.embedding_dimensions,
         )
 
-    def _get_model(self) -> BGEM3FlagModel:
-        if self._model_init_error is not None:
-            raise RuntimeError(self._model_init_error)
-        if self._model is None:
-            try:
-                self._model = BGEM3FlagModel(
-                    model_name_or_path=self.settings.bge_model_name,
-                    use_fp16=self.device.startswith("cuda"),
-                    devices=self.device,
-                    return_dense=True,
-                    return_sparse=False,
-                    return_colbert_vecs=False,
-                )
-            except Exception as err:  # noqa: BLE001
-                self._model_init_error = (
-                    f"Failed to initialize embedding model {self.settings.bge_model_name}: {err}"
-                )
-                raise RuntimeError(self._model_init_error) from err
-        return self._model
-
-    @staticmethod
-    def _resolve_device(configured: str) -> str:
-        if configured == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        return configured
+    def _client_or_raise(self) -> OpenAI:
+        if self._client is not None:
+            return self._client
+        if self.settings.embedding_provider.lower() != "openai":
+            raise RuntimeError(
+                f"Unsupported embedding provider: {self.settings.embedding_provider}"
+            )
+        if not self.settings.openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY is required for embeddings.")
+        self._client = OpenAI(api_key=self.settings.openai_api_key)
+        return self._client

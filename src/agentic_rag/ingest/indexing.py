@@ -8,7 +8,7 @@ from typing import Any
 from qdrant_client.http import models
 
 from agentic_rag.config import Settings
-from agentic_rag.ingest.embeddings import BgeM3DenseEmbedder
+from agentic_rag.ingest.embeddings import OpenAIEmbedder
 from agentic_rag.storage.qdrant import ensure_child_chunk_collection, get_client
 from agentic_rag.storage.repositories import ChunkRepository
 from agentic_rag.storage.sqlite import SQLiteStore
@@ -24,15 +24,15 @@ class IndexSummary:
     force: bool
     model_name: str
     config_hash: str
-    device: str
+    dimensions: int
 
 
 class ChildChunkIndexer:
-    def __init__(self, settings: Settings, embedder: BgeM3DenseEmbedder | None = None) -> None:
+    def __init__(self, settings: Settings, embedder: OpenAIEmbedder | None = None) -> None:
         self.settings = settings
         self.store = SQLiteStore(settings.app_db_path)
         self.chunk_repo = ChunkRepository(self.store)
-        self.embedder = embedder or BgeM3DenseEmbedder(settings=settings)
+        self.embedder = embedder or OpenAIEmbedder(settings=settings)
 
     def index_unembedded_chunks(
         self,
@@ -43,7 +43,9 @@ class ChildChunkIndexer:
         config_hash = self._embedding_config_hash()
         client = get_client(self.settings.qdrant_url)
         ensure_child_chunk_collection(
-            client=client, collection_name=self.settings.qdrant_collection
+            client=client,
+            collection_name=self.settings.qdrant_collection,
+            vector_size=self.settings.embedding_dimensions,
         )
 
         total_chunks = self.chunk_repo.count_chunks_total()
@@ -51,7 +53,7 @@ class ChildChunkIndexer:
             total_chunks
             if force
             else self.chunk_repo.count_chunks_pending(
-                model_name=self.settings.bge_model_name,
+                model_name=self.settings.embedding_model,
                 config_hash=config_hash,
             )
         )
@@ -62,7 +64,7 @@ class ChildChunkIndexer:
         while True:
             rows = self.chunk_repo.fetch_chunks_for_indexing(
                 limit=limit,
-                model_name=self.settings.bge_model_name,
+                model_name=self.settings.embedding_model,
                 config_hash=config_hash,
                 force=force,
             )
@@ -107,17 +109,16 @@ class ChildChunkIndexer:
             indexed_chunks=indexed_chunks,
             skipped_as_up_to_date=skipped_as_up_to_date,
             force=force,
-            model_name=self.settings.bge_model_name,
+            model_name=self.settings.embedding_model,
             config_hash=config_hash,
-            device=self.embedder.device,
+            dimensions=self.settings.embedding_dimensions,
         )
 
     def _embedding_config_hash(self) -> str:
         material = (
-            f"model={self.settings.bge_model_name}|"
-            "mode=dense_only|"
-            "normalize_embeddings=true|"
-            f"device_policy={self.settings.bge_device}"
+            f"provider={self.settings.embedding_provider}|"
+            f"model={self.settings.embedding_model}|"
+            f"dimensions={self.settings.embedding_dimensions}"
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
