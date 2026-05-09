@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
+from agentic_rag.llm.client import OpenAILLMClient
+from agentic_rag.llm.prompts import (
+    ANSWER_SYSTEM_PROMPT,
+    EVIDENCE_SYSTEM_PROMPT,
+    MEMORY_SYSTEM_PROMPT,
+    answer_user_prompt,
+    evidence_user_prompt,
+    memory_user_prompt,
+)
+from agentic_rag.llm.schemas import LLMAnswerOutput, LLMEvidenceOutput, LLMMemoryWriteOutput
 from agentic_rag.retrieval.types import EvidenceStatus, RetrievalVariant
 from agentic_rag.tools.arxiv_tools import ArxivToolset
-from agentic_rag.tools.schemas import ArxivSearchInput
+from agentic_rag.tools.schemas import ArxivLookupByIdInput, ArxivSearchInput
 
 from .citations import build_sources_block, validate_citations
 from .memory import MemoryService
-from .router import RouterDecision, route_query
+from .router import route_query_with_llm
 from .state import AgentState
 
 
@@ -18,11 +29,13 @@ class AgentDependencies:
     memory_service: MemoryService
     toolset: ArxivToolset
     trace_writer: object
+    llm_client: OpenAILLMClient
 
 
 class AgentNodes:
     def __init__(self, deps: AgentDependencies) -> None:
         self.deps = deps
+        self.settings = deps.llm_client.settings
 
     def load_state(self, state: AgentState) -> AgentState:
         memories = self.deps.memory_service.read_recent(limit=10)
@@ -30,7 +43,12 @@ class AgentNodes:
         return {"memory_context": memories}
 
     def route_query(self, state: AgentState) -> AgentState:
-        decision: RouterDecision = route_query(state["raw_user_query"])
+        decision, mode = route_query_with_llm(
+            query=state["raw_user_query"],
+            llm_client=self.deps.llm_client,
+            router_model=self.settings.router_model,
+            memory_context=state.get("memory_context", []),
+        )
         self._trace(
             state,
             "router.completed",
@@ -38,6 +56,7 @@ class AgentNodes:
                 "action": decision.action,
                 "confidence": decision.route_confidence,
                 "reason": decision.route_reason_public,
+                "routing_mode": mode,
             },
             node="route_query",
         )
@@ -53,6 +72,7 @@ class AgentNodes:
             "refusal_reason": decision.refusal_reason or "",
             "expected_next_node": decision.expected_next_node,
             "retrieval_variant": decision.retrieval_variant,
+            "routing_mode": mode,
         }
 
     def clarify(self, state: AgentState) -> AgentState:
@@ -90,12 +110,13 @@ class AgentNodes:
                 "evidence_status": EvidenceStatus.insufficient,
                 "evidence_confidence": "LOW",
                 "evidence_signals": {"error": str(err)},
+                "conflict_label": "NONE",
                 "refusal_reason": (
                     "I can’t answer from the indexed corpus right now because "
-                    "retrieval dependencies are unavailable "
-                    "(embedding model or vector index)."
+                    "retrieval dependencies are unavailable."
                 ),
             }
+
         self._trace(
             state,
             "retrieval.parents_scored",
@@ -104,9 +125,27 @@ class AgentNodes:
                 "selected_parents": result.selected_parent_ids,
                 "top_parent_score": result.signals.top_parent_score,
                 "evidence_status": result.signals.evidence_status.value,
+                "source_ids": [packet.source_id for packet in result.context_packets],
             },
             node="retrieve",
         )
+        if state.get("trace_id"):
+            self.deps.trace_writer.retrieval(
+                trace_id=state["trace_id"],
+                payload={
+                    "top_child_score": result.signals.top_child_score,
+                    "top_parent_score": result.signals.top_parent_score,
+                    "second_parent_score": result.signals.second_parent_score,
+                    "score_margin": result.signals.score_margin,
+                    "supporting_child_count": result.signals.supporting_child_count,
+                    "distinct_parent_count": result.signals.distinct_parent_count,
+                    "distinct_paper_count": result.signals.distinct_paper_count,
+                    "section_type_distribution": result.signals.section_type_distribution,
+                    "confidence_band": result.signals.confidence_band,
+                    "evidence_status": result.signals.evidence_status.value,
+                    "thresholds_used": result.signals.thresholds_used,
+                },
+            )
         return {
             "retrieved_child_ids": result.retrieved_child_ids,
             "selected_parent_ids": result.selected_parent_ids,
@@ -116,40 +155,106 @@ class AgentNodes:
             "evidence_status": result.signals.evidence_status,
             "evidence_confidence": result.signals.confidence_band,
             "evidence_signals": result.signals.__dict__,
+            "conflict_label": "NONE",
         }
 
     def tool(self, state: AgentState) -> AgentState:
         tool_name = state.get("tool_name", "")
         if tool_name == "arxiv_search":
-            payload = ArxivSearchInput(query=state.get("rewritten_query", state["raw_user_query"]))
+            query = str(
+                state.get("tool_args", {}).get(
+                    "query", state.get("rewritten_query", state["raw_user_query"])
+                )
+            )
+            payload = ArxivSearchInput(query=query)
             output = self.deps.toolset.arxiv_search(payload)
             self._trace(
                 state,
                 "tool.called",
                 {
                     "tool_name": tool_name,
+                    "tool_args": payload.model_dump(mode="json"),
                     "status": output.status.value,
                     "papers": len(output.papers),
                 },
                 node="tool",
             )
+            if state.get("trace_id"):
+                self.deps.trace_writer.tool(
+                    trace_id=state["trace_id"],
+                    payload={
+                        "tool_name": tool_name,
+                        "tool_args": payload.model_dump(mode="json"),
+                        "tool_status": output.status.value,
+                        "tool_result_summary": f"papers={len(output.papers)}",
+                    },
+                )
             lines = []
-            for idx, paper in enumerate(output.papers[:5], start=1):
+            for idx, paper in enumerate(output.papers[:5], start=2):
                 lines.append(f"[T{idx}] {paper.title} arXiv:{paper.arxiv_id}")
-            answer = (
-                "Here are matching arXiv metadata results:\n" + "\n".join(lines)
-                if lines
-                else "No matches."
-            )
-            sources = [
-                f"[T{idx}] arXiv API arxiv_search query: {payload.query}"
-                for idx, _ in enumerate(lines, 1)
-            ]
+            sources = [f"[T1] arXiv API arxiv_search query: {payload.query}"]
+            if lines:
+                answer = "Here are matching arXiv metadata results [T1]:\n" + "\n".join(lines)
+                for idx, paper in enumerate(output.papers[:5], start=2):
+                    sources.append(f"[T{idx}] {paper.title}, arXiv:{paper.arxiv_id}")
+                citations = [f"T{idx}" for idx in range(1, len(lines) + 2)]
+            else:
+                answer = "No matching arXiv records were returned for this query [T1]."
+                citations = ["T1"]
             return {
-                "tool_result": output.model_dump(mode="json"),
+                "tool_result": {"tool_name": tool_name, **output.model_dump(mode="json")},
                 "final_action": "ANSWER_FROM_TOOL",
                 "final_answer": answer,
-                "citations": [f"T{idx}" for idx, _ in enumerate(lines, 1)],
+                "citations": citations,
+                "sources_block": build_sources_block(source_lines=[], tool_lines=sources),
+            }
+        if tool_name == "arxiv_lookup_by_id":
+            tool_args = state.get("tool_args", {})
+            raw_ids = tool_args.get("arxiv_ids")
+            ids = _coerce_arxiv_ids(raw_ids)
+            if not ids:
+                ids = _coerce_arxiv_ids(state.get("rewritten_query", state["raw_user_query"]))
+            include_abstract = _coerce_bool(tool_args.get("include_abstract"), default=True)
+            payload = ArxivLookupByIdInput(arxiv_ids=ids, include_abstract=include_abstract)
+            output = self.deps.toolset.arxiv_lookup_by_id(payload)
+            self._trace(
+                state,
+                "tool.called",
+                {
+                    "tool_name": tool_name,
+                    "tool_args": payload.model_dump(mode="json"),
+                    "status": output.status.value,
+                    "papers": len(output.papers),
+                },
+                node="tool",
+            )
+            if state.get("trace_id"):
+                self.deps.trace_writer.tool(
+                    trace_id=state["trace_id"],
+                    payload={
+                        "tool_name": tool_name,
+                        "tool_args": payload.model_dump(mode="json"),
+                        "tool_status": output.status.value,
+                        "tool_result_summary": f"papers={len(output.papers)}",
+                    },
+                )
+            lines = []
+            for idx, paper in enumerate(output.papers[:5], start=2):
+                lines.append(f"[T{idx}] {paper.title} arXiv:{paper.arxiv_id}")
+            sources = [f"[T1] arXiv API arxiv_lookup_by_id ids: {', '.join(payload.arxiv_ids)}"]
+            if lines:
+                answer = "Here are arXiv lookup results [T1]:\n" + "\n".join(lines)
+                for idx, paper in enumerate(output.papers[:5], start=2):
+                    sources.append(f"[T{idx}] {paper.title}, arXiv:{paper.arxiv_id}")
+                citations = [f"T{idx}" for idx in range(1, len(lines) + 2)]
+            else:
+                answer = "No matching arXiv records were returned for those IDs [T1]."
+                citations = ["T1"]
+            return {
+                "tool_result": {"tool_name": tool_name, **output.model_dump(mode="json")},
+                "final_action": "ANSWER_FROM_TOOL",
+                "final_answer": answer,
+                "citations": citations,
                 "sources_block": build_sources_block(source_lines=[], tool_lines=sources),
             }
         return {
@@ -161,58 +266,102 @@ class AgentNodes:
         }
 
     def evidence_check(self, state: AgentState) -> AgentState:
-        status = state.get("evidence_status", EvidenceStatus.insufficient)
-        if status == EvidenceStatus.sufficient:
-            final_action = "ANSWER_FROM_CONTEXT"
-        elif status == EvidenceStatus.ambiguous:
-            final_action = "CLARIFY"
+        packets = state.get("context_packets", [])
+        llm_result = self._classify_evidence_with_llm(state, packets)
+        if llm_result is not None:
+            evidence_status = EvidenceStatus(llm_result.evidence_status)
+            final_action = llm_result.recommended_action
+            confidence = llm_result.confidence_band
+            conflict_label = llm_result.conflict_label
+            update = {
+                "evidence_status": evidence_status,
+                "evidence_confidence": confidence,
+                "conflict_label": conflict_label,
+            }
         else:
-            final_action = "REFUSE"
+            status = state.get("evidence_status", EvidenceStatus.insufficient)
+            if status == EvidenceStatus.sufficient:
+                final_action = "ANSWER_FROM_CONTEXT"
+            elif status == EvidenceStatus.ambiguous:
+                final_action = "CLARIFY"
+            else:
+                final_action = "REFUSE"
+            update = {"conflict_label": state.get("conflict_label", "NONE")}
+
         self._trace(
             state,
             "evidence.checked",
             {
-                "status": status.value,
-                "confidence": state.get("evidence_confidence", "LOW"),
+                "status": str(
+                    update.get("evidence_status", state.get("evidence_status", "UNKNOWN"))
+                ),
+                "confidence": update.get(
+                    "evidence_confidence", state.get("evidence_confidence", "LOW")
+                ),
+                "conflict_label": update.get("conflict_label", "NONE"),
                 "final_evidence_action": final_action,
             },
             node="evidence_check",
         )
-        return {"final_action": final_action}
+        if state.get("trace_id"):
+            self.deps.trace_writer.evidence(
+                trace_id=state["trace_id"],
+                payload={
+                    "evidence_status": str(
+                        update.get("evidence_status", state.get("evidence_status", "UNKNOWN"))
+                    )
+                    .replace("EvidenceStatus.", "")
+                    .upper(),
+                    "confidence_band": update.get(
+                        "evidence_confidence", state.get("evidence_confidence", "LOW")
+                    ),
+                    "missing_info": state.get("refusal_reason", ""),
+                    "contradiction_notes": str(update.get("conflict_label", "NONE")),
+                },
+            )
+        return {**update, "final_action": final_action}
 
     def answer(self, state: AgentState) -> AgentState:
         packets = state.get("context_packets", [])
         if not packets:
             return {
                 "final_action": "REFUSE",
-                "final_answer": "I can’t answer that from the indexed arXiv corpus.",
+                "final_answer": (
+                    "I can’t answer that from the indexed arXiv corpus. "
+                    "The retrieved sections do not provide sufficient evidence."
+                ),
                 "refusal_reason": "No retrieved evidence.",
                 "citations": [],
                 "sources_block": "",
             }
 
-        claims: list[str] = []
-        source_lines: list[str] = []
-        for packet in packets[:4]:
-            source_id = packet["source_id"]
-            evidence = (
-                packet["highlighted_evidence"].splitlines()[0]
-                if packet["highlighted_evidence"]
-                else ""
-            )
-            short = evidence[:200] if evidence else packet["section_context"][:200]
-            claims.append(f"{short} [{source_id}]")
-            source_lines.append(
-                f"[{source_id}] {packet['title']}, arXiv:{packet['arxiv_id']}, "
-                f"{packet['section_path']}, pp. {packet['page_start']}-{packet['page_end']}"
-            )
+        llm_answer = self._answer_with_llm(state, packets)
+        if llm_answer is None:
+            llm_answer = self._fallback_answer(packets)
 
-        answer = "Evidence from retrieved sections:\n" + "\n".join(f"- {claim}" for claim in claims)
+        if llm_answer.final_action == "CLARIFY":
+            return {
+                "final_action": "CLARIFY",
+                "final_answer": llm_answer.clarifying_question or "Could you clarify your request?",
+                "citations": [],
+                "sources_block": "",
+            }
+        if llm_answer.final_action == "REFUSE":
+            return {
+                "final_action": "REFUSE",
+                "final_answer": llm_answer.refusal_reason
+                or "I can’t answer that from the indexed arXiv corpus.",
+                "citations": [],
+                "sources_block": "",
+            }
+
+        source_lines = [self._source_line(packet) for packet in packets]
         sources_block = build_sources_block(source_lines=source_lines, tool_lines=[])
+        citations = sorted(set(llm_answer.cited_source_ids + llm_answer.cited_tool_ids))
         return {
             "final_action": "ANSWER_FROM_CONTEXT",
-            "final_answer": answer,
-            "citations": [packet["source_id"] for packet in packets[:4]],
+            "final_answer": llm_answer.answer_text,
+            "citations": citations,
             "sources_block": sources_block,
         }
 
@@ -234,18 +383,45 @@ class AgentNodes:
             return {}
 
         answer = state.get("final_answer", "")
-        if state.get("sources_block"):
-            answer = f"{answer}\n\n{state['sources_block']}"
+        sources_block = state.get("sources_block", "")
+        if sources_block and "Sources:" not in answer:
+            answer = f"{answer}\n\n{sources_block}"
+
         source_ids = {packet["source_id"] for packet in state.get("context_packets", [])}
-        tool_ids = set(state.get("citations", []))
-        require_source = final_action == "ANSWER_FROM_CONTEXT"
+        tool_ids = set(re.findall(r"^\[(T\d+)\]", sources_block, flags=re.MULTILINE))
+        if final_action == "ANSWER_FROM_TOOL" and not tool_ids:
+            tool_ids = {cid for cid in state.get("citations", []) if str(cid).startswith("T")}
+
+        evidence_status = state.get("evidence_status", EvidenceStatus.insufficient)
+        if hasattr(evidence_status, "value"):
+            evidence_status = evidence_status.value
+
         ok, message = validate_citations(
             answer=answer,
+            sources_block=sources_block,
             allowed_source_ids=source_ids,
             allowed_tool_ids=tool_ids,
-            require_source_citation=require_source,
+            final_action=final_action,
+            evidence_status=str(evidence_status),
         )
         if ok:
+            self._trace(
+                state,
+                "citation.validated",
+                {"status": "ok", "citations": sorted(source_ids | tool_ids)},
+                node="citation_validate",
+            )
+            if state.get("trace_id"):
+                self.deps.trace_writer.answer(
+                    trace_id=state["trace_id"],
+                    payload={
+                        "final_action": final_action,
+                        "citation_ids": state.get("citations", []),
+                        "answer_text": answer,
+                        "refusal_reason": state.get("refusal_reason", ""),
+                        "clarifying_question": state.get("clarifying_question", ""),
+                    },
+                )
             return {"final_answer": answer}
         self._trace(
             state,
@@ -263,16 +439,24 @@ class AgentNodes:
         }
 
     def memory_update(self, state: AgentState) -> AgentState:
-        action = state.get("final_action", "")
-        if action == "ANSWER_FROM_CONTEXT":
-            key = "last_answer_topic"
-            value = state.get("raw_user_query", "")[:120]
-            memory_id = self.deps.memory_service.write_decision(
-                key=key,
-                value=value,
-                source_turn_id=state["turn_id"],
-            )
-            self._trace(state, "memory.write", {"memory_id": memory_id, "key": key})
+        if state.get("final_action") not in {"ANSWER_FROM_CONTEXT", "ANSWER_FROM_TOOL"}:
+            return {}
+        memory_write = self._memory_write_decision(state)
+        if not memory_write.should_write or not memory_write.key or not memory_write.value:
+            return {}
+
+        memory_id = self.deps.memory_service.write(
+            kind=memory_write.kind,
+            key=memory_write.key,
+            value=memory_write.value,
+            confidence=memory_write.confidence,
+            source_turn_id=state["turn_id"],
+        )
+        self._trace(
+            state,
+            "memory.write",
+            {"memory_id": memory_id, "key": memory_write.key, "kind": memory_write.kind},
+        )
         return {}
 
     def _trace(
@@ -311,3 +495,140 @@ class AgentNodes:
             "CLARIFY": "clarify",
             "REFUSE": "refuse",
         }.get(action, "refuse")
+
+    def _classify_evidence_with_llm(
+        self, state: AgentState, packets: list[dict[str, object]]
+    ) -> LLMEvidenceOutput | None:
+        if not packets:
+            return None
+        if not self.deps.llm_client.enabled():
+            return None
+        try:
+            return self.deps.llm_client.complete_json(
+                model=self.settings.evidence_model,
+                schema=LLMEvidenceOutput,
+                system_prompt=EVIDENCE_SYSTEM_PROMPT,
+                user_prompt=evidence_user_prompt(
+                    query=state.get("rewritten_query", state["raw_user_query"]),
+                    context_packets=packets,
+                    retrieval_signals=state.get("evidence_signals", {}),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _answer_with_llm(
+        self, state: AgentState, packets: list[dict[str, object]]
+    ) -> LLMAnswerOutput | None:
+        if not self.deps.llm_client.enabled():
+            return None
+        evidence_status = state.get("evidence_status", EvidenceStatus.insufficient)
+        if hasattr(evidence_status, "value"):
+            evidence_status = evidence_status.value
+        try:
+            answer = self.deps.llm_client.complete_json(
+                model=self.settings.answer_model,
+                schema=LLMAnswerOutput,
+                system_prompt=ANSWER_SYSTEM_PROMPT,
+                user_prompt=answer_user_prompt(
+                    query=state.get("rewritten_query", state["raw_user_query"]),
+                    context_packets=packets,
+                    evidence_status=str(evidence_status),
+                    tool_result=state.get("tool_result"),
+                ),
+            )
+            if answer.final_action == "ANSWER_FROM_CONTEXT" and not answer.answer_text:
+                return None
+            return answer
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _fallback_answer(self, packets: list[dict[str, object]]) -> LLMAnswerOutput:
+        claims: list[str] = []
+        for packet in packets[:3]:
+            evidence = str(packet.get("highlighted_evidence", "")).splitlines()[0:1]
+            text = evidence[0] if evidence else str(packet.get("section_context", ""))[:200]
+            text = _strip_internal_ids(text)
+            claims.append(f"{text} [{packet['source_id']}]")
+        answer_text = "Based on the retrieved corpus sections:\n" + "\n".join(
+            f"- {claim}" for claim in claims
+        )
+        return LLMAnswerOutput(
+            final_action="ANSWER_FROM_CONTEXT",
+            answer_text=answer_text,
+            cited_source_ids=[packet["source_id"] for packet in packets[:3]],
+        )
+
+    def _source_line(self, packet: dict[str, object]) -> str:
+        page_start = packet.get("page_start")
+        page_end = packet.get("page_end")
+        if page_start is None or page_end is None:
+            page_span = "page unavailable"
+        else:
+            page_span = f"pp. {page_start}-{page_end}"
+        return (
+            f"[{packet['source_id']}] {packet['title']}, arXiv:{packet['arxiv_id']}, "
+            f"{packet['section_path']}, {page_span}"
+        )
+
+    def _memory_write_decision(self, state: AgentState) -> LLMMemoryWriteOutput:
+        query = state.get("raw_user_query", "")
+        lowered = query.lower()
+        trigger_terms = ("remember", "lock this", "we choose", "decision", "prefer", "constraint")
+        if not any(term in lowered for term in trigger_terms):
+            return LLMMemoryWriteOutput(should_write=False)
+        if not self.deps.llm_client.enabled():
+            return LLMMemoryWriteOutput(
+                should_write=True,
+                kind="decision",
+                key="user_decision",
+                value=query[:200],
+                confidence=0.8,
+            )
+        try:
+            decision = self.deps.llm_client.complete_json(
+                model=self.settings.evidence_model,
+                schema=LLMMemoryWriteOutput,
+                system_prompt=MEMORY_SYSTEM_PROMPT,
+                user_prompt=memory_user_prompt(
+                    query=query,
+                    answer=state.get("final_answer", ""),
+                    final_action=state.get("final_action", ""),
+                ),
+            )
+            return decision
+        except Exception:  # noqa: BLE001
+            return LLMMemoryWriteOutput(should_write=False)
+
+
+def _strip_internal_ids(text: str) -> str:
+    text = re.sub(r"\bchunk_[a-zA-Z0-9_]+\b", "", text)
+    text = re.sub(r"\bparent_[a-zA-Z0-9_]+\b", "", text)
+    text = re.sub(r"\bpaper_[a-zA-Z0-9_]+\b", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _coerce_arxiv_ids(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if "," in stripped:
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        matches = re.findall(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", stripped)
+        return matches or [stripped]
+    return []
+
+
+def _coerce_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "n"}:
+            return False
+    return default

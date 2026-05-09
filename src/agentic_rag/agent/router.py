@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from agentic_rag.llm.client import OpenAILLMClient
+from agentic_rag.llm.prompts import ROUTER_SYSTEM_PROMPT, router_user_prompt
+from agentic_rag.llm.schemas import LLMRouterOutput
 from agentic_rag.retrieval.types import RetrievalVariant
 
 from .state import RouteAction
@@ -22,6 +25,46 @@ class RouterDecision(BaseModel):
 
 
 def route_query(query: str) -> RouterDecision:
+    return _fallback_route_query(query)
+
+
+def route_query_with_llm(
+    *,
+    query: str,
+    llm_client: OpenAILLMClient | None,
+    router_model: str,
+    memory_context: list[dict[str, str]],
+) -> tuple[RouterDecision, str]:
+    if llm_client is None or not llm_client.enabled():
+        return _fallback_route_query(query), "fallback"
+    try:
+        llm_output = llm_client.complete_json(
+            model=router_model,
+            schema=LLMRouterOutput,
+            system_prompt=ROUTER_SYSTEM_PROMPT,
+            user_prompt=router_user_prompt(query=query, memory_context=memory_context),
+        )
+        return (
+            RouterDecision(
+                action=llm_output.action,
+                route_confidence=llm_output.route_confidence,
+                route_reason_public=llm_output.route_reason_public,
+                rewritten_query=llm_output.rewritten_query,
+                retrieval_filters={k: str(v) for k, v in llm_output.retrieval_filters.items()},
+                tool_name=llm_output.tool_name,
+                tool_args={k: str(v) for k, v in llm_output.tool_args.items()},
+                clarifying_question=llm_output.clarifying_question,
+                refusal_reason=llm_output.refusal_reason,
+                expected_next_node=llm_output.expected_next_node,
+                retrieval_variant=RetrievalVariant(llm_output.retrieval_variant),
+            ),
+            "llm",
+        )
+    except Exception:  # noqa: BLE001
+        return _fallback_route_query(query), "fallback"
+
+
+def _fallback_route_query(query: str) -> RouterDecision:
     lowered = query.strip().lower()
     if not lowered:
         return RouterDecision(

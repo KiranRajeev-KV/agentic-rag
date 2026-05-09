@@ -64,7 +64,7 @@ class ArxivSearchInput(BaseModel):
 class ArxivGetRecentInput(BaseModel):
     category: str = "cs.AI"
     days_back: int = Field(default=90, ge=1, le=365)
-    max_results: int = Field(default=100, ge=1, le=1000)
+    max_results: int = Field(default=100, ge=1, le=100)
     query_filter: str | None = None
 
 

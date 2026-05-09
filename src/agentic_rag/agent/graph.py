@@ -3,6 +3,7 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from agentic_rag.config import Settings
+from agentic_rag.llm.client import OpenAILLMClient
 from agentic_rag.retrieval.service import RetrievalService
 from agentic_rag.retrieval.types import RetrievalVariant
 from agentic_rag.storage.repositories import SemanticMemoryRepository
@@ -23,6 +24,7 @@ class AskGraphRunner:
             memory_service=MemoryService(SemanticMemoryRepository(store)),
             toolset=ArxivToolset(settings=settings),
             trace_writer=TraceWriter(store),
+            llm_client=OpenAILLMClient(settings=settings),
         )
         self.nodes = AgentNodes(deps)
         self.trace_writer = deps.trace_writer

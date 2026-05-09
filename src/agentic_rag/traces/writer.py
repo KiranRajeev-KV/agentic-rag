@@ -51,3 +51,15 @@ class TraceWriter:
     def complete(self, trace_id: str, final_action: str) -> None:
         self.event(trace_id, "info", "turn.completed", {"final_action": final_action})
         self.repo.complete_trace(trace_id)
+
+    def retrieval(self, trace_id: str, payload: dict[str, Any]) -> None:
+        self.repo.add_retrieval_trace(trace_id=trace_id, payload=payload)
+
+    def tool(self, trace_id: str, payload: dict[str, Any]) -> None:
+        self.repo.add_tool_trace(trace_id=trace_id, payload=payload)
+
+    def evidence(self, trace_id: str, payload: dict[str, Any]) -> None:
+        self.repo.add_evidence_trace(trace_id=trace_id, payload=payload)
+
+    def answer(self, trace_id: str, payload: dict[str, Any]) -> None:
+        self.repo.add_answer_trace(trace_id=trace_id, payload=payload)

@@ -43,6 +43,8 @@ class AgentState(TypedDict, total=False):
     evidence_status: EvidenceStatus
     evidence_confidence: str
     evidence_signals: dict[str, Any]
+    conflict_label: str
+    routing_mode: str
 
     final_action: str
     final_answer: str
