@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from agentic_rag.config import get_settings
+from agentic_rag.config import Settings, get_settings
 from agentic_rag.ingest.indexing import ChildChunkIndexer
 from agentic_rag.ingest.pipeline import IngestPipeline
 from agentic_rag.storage.bootstrap import initialize_storage
@@ -33,11 +33,19 @@ def main() -> None:
 
 @app.command("ingest")
 def ingest_command(
-    limit: Annotated[int, typer.Option("--limit", min=1)] = 20,
+    limit: Annotated[int, typer.Option("--limit", min=1, help="Number of papers to ingest.")] = 20,
     days_back: Annotated[int, typer.Option("--days-back", min=1, max=365)] = 90,
+    index: Annotated[
+        bool,
+        typer.Option(
+            "--index",
+            help="Optional convenience step: run `app index` behavior after SQLite ingestion.",
+        ),
+    ] = False,
 ) -> None:
     settings = get_settings()
     initialize_storage(settings=settings, init_qdrant=False)
+    typer.echo("ingest.start sqlite_only=true")
     pipeline = IngestPipeline(settings=settings)
     summary = pipeline.run(limit=limit, days_back=days_back)
     typer.echo(
@@ -52,6 +60,10 @@ def ingest_command(
         for err in summary.errors[:10]:
             typer.echo(f"- {err}")
 
+    if index:
+        typer.echo("ingest.index opt-in enabled: running indexing step.")
+        _run_index(settings=settings, limit=500, batch_size=32, force=False)
+
 
 @app.command("ask")
 def ask_command(
@@ -65,16 +77,23 @@ def ask_command(
 
 @app.command("index")
 def index_command(
-    limit: Annotated[int, typer.Option("--limit", min=1)] = 500,
-    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 32,
+    limit: Annotated[
+        int, typer.Option("--limit", min=1, help="Max chunks to index this run.")
+    ] = 500,
+    batch_size: Annotated[
+        int,
+        typer.Option("--batch-size", min=1, help="Embedding batch size for BGEM3 dense encoding."),
+    ] = 32,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Re-embed and upsert regardless of prior index metadata (limited by --limit).",
+        ),
+    ] = False,
 ) -> None:
     settings = get_settings()
-    indexer = ChildChunkIndexer(settings=settings)
-    summary = indexer.index_unembedded_chunks(limit=limit, batch_size=batch_size)
-    typer.echo(
-        f"index.summary selected={summary.selected_chunks} indexed={summary.indexed_chunks} "
-        f"model={summary.model_name} device={summary.device}"
-    )
+    _run_index(settings=settings, limit=limit, batch_size=batch_size, force=force)
 
 
 @corpus_app.command("discover")
@@ -193,6 +212,29 @@ def db_reset_command(
         settings.app_db_path.unlink()
     initialize_storage(settings=settings, init_qdrant=False)
     typer.echo(f"Reset SQLite DB at {settings.app_db_path}")
+
+
+def _run_index(settings: Settings, limit: int, batch_size: int, force: bool) -> None:
+    initialize_storage(settings=settings, init_qdrant=False)
+    typer.echo(
+        "index.warning this may trigger a large BGE-M3 model download and heavy local compute. "
+        "Use --limit for smaller runs."
+    )
+    typer.echo(
+        f"index.start mode={'force' if force else 'idempotent'} "
+        f"limit={limit} batch_size={batch_size}"
+    )
+    indexer = ChildChunkIndexer(settings=settings)
+    summary = indexer.index_unembedded_chunks(limit=limit, batch_size=batch_size, force=force)
+    typer.echo(
+        f"index.progress total_chunks={summary.total_chunks} pending={summary.pending_chunks} "
+        f"up_to_date={summary.skipped_as_up_to_date}"
+    )
+    typer.echo(
+        f"index.summary selected={summary.selected_chunks} indexed={summary.indexed_chunks} "
+        f"model={summary.model_name} config_hash={summary.config_hash[:12]} "
+        f"device={summary.device} force={summary.force}"
+    )
 
 
 if __name__ == "__main__":

@@ -15,6 +15,9 @@ cp .env.example .env
 uv sync
 docker compose up -d qdrant
 uv run app db init
+uv run app ingest --limit 20
+uv run app index
+uv run app ask "What do recent papers say about agent memory?" --debug
 uv run app --help
 ```
 
@@ -22,6 +25,7 @@ uv run app --help
 
 ```bash
 uv run app ingest --limit 20
+uv run app index
 uv run app ask "What do recent papers say about agent memory?" --debug
 uv run app trace list --last 10
 ```

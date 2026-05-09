@@ -154,29 +154,41 @@ class ChunkRepository:
                   chunk_id, parent_id, paper_id, chunk_index, section_path,
                   section_type, content_type, page_start, page_end, token_count,
                   char_start, char_end, docling_ref_ids, embedding_text_hash,
-                  embedding_model, created_at, chunk_text
+                  embedding_model, embedding_config_hash, indexed_embedding_text_hash,
+                  last_indexed_at, created_at, chunk_text
                 ) VALUES (
                   :chunk_id, :parent_id, :paper_id, :chunk_index, :section_path,
                   :section_type, :content_type, :page_start, :page_end, :token_count,
                   :char_start, :char_end, :docling_ref_ids,
-                  :embedding_text_hash, :embedding_model, :created_at, :chunk_text
+                  :embedding_text_hash, :embedding_model, :embedding_config_hash,
+                  :indexed_embedding_text_hash, :last_indexed_at, :created_at, :chunk_text
                 )
                 """,
-                rows,
+                [self._with_index_defaults(row) for row in rows],
             )
             conn.commit()
 
     def fetch_chunks_for_indexing(
-        self, limit: int, embedded_model: str | None = None
+        self,
+        limit: int,
+        model_name: str,
+        config_hash: str,
+        force: bool = False,
     ) -> list[dict[str, Any]]:
-        predicate = "AND (c.embedding_model IS NULL OR c.embedding_model = '')"
-        params: list[Any] = [limit]
-        if embedded_model:
+        predicate = ""
+        params: list[Any] = []
+        if not force:
             predicate = (
                 "AND (c.embedding_model IS NULL OR c.embedding_model = '' "
-                "OR c.embedding_model != ?)"
+                "OR c.embedding_model != ? "
+                "OR c.embedding_config_hash IS NULL OR c.embedding_config_hash = '' "
+                "OR c.embedding_config_hash != ? "
+                "OR c.indexed_embedding_text_hash IS NULL "
+                "OR c.indexed_embedding_text_hash = '' "
+                "OR c.indexed_embedding_text_hash != c.embedding_text_hash)"
             )
-            params = [embedded_model, limit]
+            params.extend([model_name, config_hash])
+        params.append(limit)
         rows = self.store.fetchall(
             f"""
             SELECT
@@ -190,6 +202,10 @@ class ChunkRepository:
               c.page_start,
               c.page_end,
               c.token_count,
+              c.embedding_text_hash,
+              c.embedding_model,
+              c.embedding_config_hash,
+              c.indexed_embedding_text_hash,
               c.chunk_text,
               p.arxiv_id,
               p.title,
@@ -207,15 +223,55 @@ class ChunkRepository:
         )
         return [dict(row) for row in rows]
 
-    def mark_embedded(self, chunk_ids: list[str], model_name: str) -> None:
+    def count_chunks_total(self) -> int:
+        rows = self.store.fetchall("SELECT COUNT(*) AS count FROM child_chunks")
+        return int(rows[0]["count"]) if rows else 0
+
+    def count_chunks_pending(self, model_name: str, config_hash: str) -> int:
+        rows = self.store.fetchall(
+            """
+            SELECT COUNT(*) AS count
+            FROM child_chunks c
+            WHERE
+              c.embedding_model IS NULL OR c.embedding_model = ''
+              OR c.embedding_model != ?
+              OR c.embedding_config_hash IS NULL OR c.embedding_config_hash = ''
+              OR c.embedding_config_hash != ?
+              OR c.indexed_embedding_text_hash IS NULL OR c.indexed_embedding_text_hash = ''
+              OR c.indexed_embedding_text_hash != c.embedding_text_hash
+            """,
+            (model_name, config_hash),
+        )
+        return int(rows[0]["count"]) if rows else 0
+
+    def mark_embedded(self, chunk_ids: list[str], model_name: str, config_hash: str) -> None:
         if not chunk_ids:
             return
+        now = _utc_now()
         with self.store.connect() as conn:
             conn.executemany(
-                "UPDATE child_chunks SET embedding_model = ? WHERE chunk_id = ?",
-                [(model_name, chunk_id) for chunk_id in chunk_ids],
+                """
+                UPDATE child_chunks
+                SET
+                  embedding_model = ?,
+                  embedding_config_hash = ?,
+                  indexed_embedding_text_hash = embedding_text_hash,
+                  last_indexed_at = ?
+                WHERE chunk_id = ?
+                """,
+                [(model_name, config_hash, now, chunk_id) for chunk_id in chunk_ids],
             )
             conn.commit()
+
+    @staticmethod
+    def _with_index_defaults(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **row,
+            "embedding_model": row.get("embedding_model", ""),
+            "embedding_config_hash": row.get("embedding_config_hash", ""),
+            "indexed_embedding_text_hash": row.get("indexed_embedding_text_hash", ""),
+            "last_indexed_at": row.get("last_indexed_at"),
+        }
 
 
 class SemanticMemoryRepository:

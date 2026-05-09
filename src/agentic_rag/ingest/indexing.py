@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,9 +15,14 @@ from agentic_rag.storage.sqlite import SQLiteStore
 
 @dataclass(frozen=True)
 class IndexSummary:
+    total_chunks: int
+    pending_chunks: int
     selected_chunks: int
     indexed_chunks: int
+    skipped_as_up_to_date: int
+    force: bool
     model_name: str
+    config_hash: str
     device: str
 
 
@@ -27,18 +33,43 @@ class ChildChunkIndexer:
         self.chunk_repo = ChunkRepository(self.store)
         self.embedder = embedder or BgeM3DenseEmbedder(settings=settings)
 
-    def index_unembedded_chunks(self, limit: int = 500, batch_size: int = 32) -> IndexSummary:
+    def index_unembedded_chunks(
+        self,
+        limit: int = 500,
+        batch_size: int = 32,
+        force: bool = False,
+    ) -> IndexSummary:
+        config_hash = self._embedding_config_hash()
         client = get_client(self.settings.qdrant_url)
         ensure_child_chunk_collection(
             client=client, collection_name=self.settings.qdrant_collection
         )
 
-        rows = self.chunk_repo.fetch_chunks_for_indexing(limit=limit)
+        total_chunks = self.chunk_repo.count_chunks_total()
+        pending_chunks = (
+            total_chunks
+            if force
+            else self.chunk_repo.count_chunks_pending(
+                model_name=self.settings.bge_model_name,
+                config_hash=config_hash,
+            )
+        )
+        rows = self.chunk_repo.fetch_chunks_for_indexing(
+            limit=limit,
+            model_name=self.settings.bge_model_name,
+            config_hash=config_hash,
+            force=force,
+        )
         if not rows:
             return IndexSummary(
+                total_chunks=total_chunks,
+                pending_chunks=pending_chunks,
                 selected_chunks=0,
                 indexed_chunks=0,
+                skipped_as_up_to_date=total_chunks - pending_chunks,
+                force=force,
                 model_name=self.settings.bge_model_name,
+                config_hash=config_hash,
                 device=self.embedder.device,
             )
 
@@ -61,14 +92,30 @@ class ChildChunkIndexer:
             wait=True,
         )
         self.chunk_repo.mark_embedded(
-            chunk_ids=[row["chunk_id"] for row in rows], model_name=batch.model_name
+            chunk_ids=[row["chunk_id"] for row in rows],
+            model_name=batch.model_name,
+            config_hash=config_hash,
         )
         return IndexSummary(
+            total_chunks=total_chunks,
+            pending_chunks=pending_chunks,
             selected_chunks=len(rows),
             indexed_chunks=len(points),
+            skipped_as_up_to_date=total_chunks - pending_chunks,
+            force=force,
             model_name=batch.model_name,
+            config_hash=config_hash,
             device=batch.device,
         )
+
+    def _embedding_config_hash(self) -> str:
+        material = (
+            f"model={self.settings.bge_model_name}|"
+            "mode=dense_only|"
+            "normalize_embeddings=true|"
+            f"device_policy={self.settings.bge_device}"
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
