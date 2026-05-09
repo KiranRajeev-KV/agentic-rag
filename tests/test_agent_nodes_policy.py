@@ -1,19 +1,50 @@
 from types import SimpleNamespace
 
 from agentic_rag.agent.nodes import AgentDependencies, AgentNodes
+from agentic_rag.llm.schemas import LLMCitationValidationOutput
 from agentic_rag.tools.schemas import ArxivPaperMetadata, ArxivToolOutput, ToolStatus
 
 
 class _FakeMemoryService:
     def __init__(self) -> None:
         self.writes = []
+        self.episodes = []
+        self.conversation_updates = []
 
     def read_recent(self, limit: int = 10):  # noqa: ANN001, ARG002
+        return []
+
+    def read_semantic(self, limit: int = 10):  # noqa: ANN001, ARG002
+        return []
+
+    def read_conversation(self, thread_id: str, limit: int = 6):  # noqa: ANN001, ARG002
+        return {
+            "summary": "",
+            "recent_turns": [],
+            "active_focus": "",
+            "active_paper_ids": [],
+            "active_arxiv_ids": [],
+        }
+
+    def read_episodes(self, thread_id: str, limit: int = 6):  # noqa: ANN001, ARG002
         return []
 
     def write(self, **kwargs):  # noqa: ANN003
         self.writes.append(kwargs)
         return "mem_1"
+
+    def update_conversation_after_turn(self, **kwargs):  # noqa: ANN003
+        self.conversation_updates.append(kwargs)
+        return {
+            "summary": "s",
+            "active_focus": "a",
+            "active_paper_ids": [],
+            "active_arxiv_ids": [],
+        }
+
+    def write_episode(self, **kwargs):  # noqa: ANN003
+        self.episodes.append(kwargs)
+        return "ep_1"
 
 
 class _FakeLLMClient:
@@ -38,6 +69,23 @@ def _build_nodes(memory_service: _FakeMemoryService, toolset: object | None = No
             answer=lambda **kwargs: None,  # noqa: ARG005
         ),
         llm_client=_FakeLLMClient(),
+    )
+    return AgentNodes(deps=deps)
+
+
+def _build_nodes_with_llm(memory_service: _FakeMemoryService, llm_client: object) -> AgentNodes:
+    deps = AgentDependencies(
+        retrieval_service=object(),
+        memory_service=memory_service,
+        toolset=SimpleNamespace(),
+        trace_writer=SimpleNamespace(
+            event=lambda **kwargs: None,  # noqa: ARG005
+            retrieval=lambda **kwargs: None,  # noqa: ARG005
+            tool=lambda **kwargs: None,  # noqa: ARG005
+            evidence=lambda **kwargs: None,  # noqa: ARG005
+            answer=lambda **kwargs: None,  # noqa: ARG005
+        ),
+        llm_client=llm_client,
     )
     return AgentNodes(deps=deps)
 
@@ -198,3 +246,78 @@ def test_tool_search_truncates_abstract() -> None:
     assert "Abstract: " in answer
     assert "TAIL_MARKER" not in answer
     assert "..." in answer
+
+
+def test_citation_validate_refuses_when_llm_semantic_validation_fails() -> None:
+    class _LLMClient:
+        settings = SimpleNamespace(
+            router_model="gpt-5-nano",
+            answer_model="gpt-5-nano",
+            evidence_model="gpt-5-nano",
+        )
+
+        def enabled(self) -> bool:
+            return True
+
+        def complete_json(self, **kwargs):  # noqa: ANN003
+            schema = kwargs["schema"]
+            if schema is LLMCitationValidationOutput:
+                return LLMCitationValidationOutput(
+                    valid=False,
+                    verdict="UNSUPPORTED_CLAIM",
+                    unsupported_claims=["claim 1"],
+                    missing_citation_spans=[],
+                    unknown_citation_ids=[],
+                    internal_id_leaks=[],
+                    repair_instruction="remove unsupported claim",
+                )
+            raise AssertionError("Unexpected schema")
+
+    nodes = _build_nodes_with_llm(_FakeMemoryService(), _LLMClient())
+    state = {
+        "final_action": "ANSWER_FROM_CONTEXT",
+        "final_answer": "Claim [S1]",
+        "sources_block": "Sources:\\n[S1] Source",
+        "citations": ["S1"],
+        "context_packets": [{"source_id": "S1"}],
+        "evidence_status": "SUFFICIENT",
+        "raw_user_query": "q",
+        "rewritten_query": "q",
+    }
+    out = nodes.citation_validate(state)
+    assert out["final_action"] == "REFUSE"
+
+
+def test_load_state_emits_memory_trace_events() -> None:
+    events = []
+
+    class _TraceWriter:
+        def event(self, **kwargs):  # noqa: ANN003
+            events.append(kwargs)
+
+        def retrieval(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+        def tool(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+        def evidence(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+        def answer(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+    deps = AgentDependencies(
+        retrieval_service=object(),
+        memory_service=_FakeMemoryService(),
+        toolset=SimpleNamespace(),
+        trace_writer=_TraceWriter(),
+        llm_client=_FakeLLMClient(),
+    )
+    nodes = AgentNodes(deps=deps)
+    out = nodes.load_state({"trace_id": "tr_1", "thread_id": "demo"})
+    assert "conversation_summary" in out
+    event_names = [event["event"] for event in events]
+    assert "memory.conversation_read" in event_names
+    assert "memory.semantic_read" in event_names
+    assert "memory.episodic_read" in event_names

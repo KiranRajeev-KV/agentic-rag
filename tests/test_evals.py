@@ -5,6 +5,27 @@ from agentic_rag.retrieval.types import RetrievalVariant
 
 
 class _FakeGraphRunner:
+    class _TraceWriter:
+        class _Trace:
+            def __init__(self, idx: int) -> None:
+                self.trace_id = f"tr_eval_{idx}"
+
+        def __init__(self) -> None:
+            self._idx = 0
+
+        def start(self, thread_id: str, run_mode: str):  # noqa: ANN001
+            del thread_id, run_mode
+            self._idx += 1
+            return self._Trace(self._idx)
+
+        def event(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+        def complete(self, trace_id: str, final_action: str):  # noqa: ANN001
+            del trace_id, final_action
+
+    trace_writer = _TraceWriter()
+
     def run(self, query: str, thread_id: str = "default", retrieval_variant=None):  # noqa: ANN001, ARG002
         action = "ANSWER_FROM_TOOL" if "search arxiv" in query.lower() else "ANSWER_FROM_CONTEXT"
         route = "TOOL" if action == "ANSWER_FROM_TOOL" else "RETRIEVE"

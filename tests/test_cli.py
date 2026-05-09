@@ -128,25 +128,43 @@ def test_ask_with_mocked_graph(monkeypatch) -> None:
         def __init__(self, settings) -> None:  # noqa: ANN001
             self.settings = settings
 
-        def run(self, query: str):  # noqa: ANN001
+        def run(self, query: str, thread_id: str = "default"):  # noqa: ANN001
             assert query == "What is agent memory?"
+            assert thread_id == "demo"
             return {
                 "trace_id": "tr_test",
+                "thread_id": "demo",
+                "turn_id": "turn_1",
                 "route_action": "RETRIEVE",
+                "routing_mode": "fallback",
+                "route_confidence": 0.7,
+                "route_reason_public": "test",
                 "retrieved_child_ids": ["c1", "c2"],
                 "selected_parent_ids": ["p1"],
+                "parent_scores": {"p1": 0.62},
                 "evidence_status": "SUFFICIENT",
+                "evidence_confidence": "MEDIUM",
                 "context_packets": [{"source_id": "S1"}],
+                "conversation_memory_read_count": 1,
+                "semantic_memory_read_count": 2,
+                "episodic_memory_read_count": 1,
+                "total_latency_ms": 120,
+                "retrieval_latency_ms": 45,
+                "llm_latency_ms": 30,
+                "tool_latency_ms": 0,
                 "final_action": "ANSWER_FROM_CONTEXT",
                 "final_answer": "Answer body [S1]\n\nSources:\n[S1] Test source",
             }
 
     monkeypatch.setattr(cli_module, "AskGraphRunner", _FakeRunner)
     monkeypatch.setattr(cli_module, "initialize_storage", lambda settings, init_qdrant: None)
-    result = runner.invoke(app, ["ask", "What is agent memory?", "--debug"])
+    result = runner.invoke(app, ["ask", "What is agent memory?", "--thread-id", "demo", "--debug"])
     assert result.exit_code == 0
     assert "Answer body [S1]" in result.stdout
     assert "Trace: tr_test" in result.stdout
+    assert "Thread: demo" in result.stdout
+    assert "Memory read: conversation=1, semantic=2, episodic=1" in result.stdout
+    assert "Latency ms: total=120, retrieval=45, llm=30, tool=0" in result.stdout
 
 
 def test_corpus_discover_with_mocked_tool(tmp_path: Path, monkeypatch) -> None:

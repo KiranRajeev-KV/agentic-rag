@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 
 from agentic_rag.llm.client import OpenAILLMClient
 from agentic_rag.llm.prompts import (
     ANSWER_SYSTEM_PROMPT,
+    CITATION_SYSTEM_PROMPT,
     EVIDENCE_SYSTEM_PROMPT,
     MEMORY_SYSTEM_PROMPT,
     answer_user_prompt,
+    citation_user_prompt,
     evidence_user_prompt,
     memory_user_prompt,
 )
-from agentic_rag.llm.schemas import LLMAnswerOutput, LLMEvidenceOutput, LLMMemoryWriteOutput
+from agentic_rag.llm.schemas import (
+    LLMAnswerOutput,
+    LLMCitationValidationOutput,
+    LLMEvidenceOutput,
+    LLMMemoryWriteOutput,
+)
 from agentic_rag.retrieval.types import EvidenceStatus, RetrievalVariant
 from agentic_rag.tools.arxiv_tools import ArxivToolset
 from agentic_rag.tools.schemas import ArxivLookupByIdInput, ArxivSearchInput
@@ -38,17 +46,59 @@ class AgentNodes:
         self.settings = deps.llm_client.settings
 
     def load_state(self, state: AgentState) -> AgentState:
-        memories = self.deps.memory_service.read_recent(limit=10)
-        self._trace(state, "memory.read", {"semantic_count": len(memories)})
-        return {"memory_context": memories}
+        thread_id = state.get("thread_id", "default")
+        conversation = self.deps.memory_service.read_conversation(thread_id=thread_id, limit=6)
+        semantic = self.deps.memory_service.read_semantic(limit=10)
+        episodes = self.deps.memory_service.read_episodes(thread_id=thread_id, limit=6)
+        self._trace(
+            state,
+            "memory.conversation_read",
+            {"count": len(conversation.get("recent_turns", [])), "thread_id": thread_id},
+            node="load_state",
+        )
+        self._trace(
+            state,
+            "memory.semantic_read",
+            {"count": len(semantic)},
+            node="load_state",
+        )
+        self._trace(
+            state,
+            "memory.episodic_read",
+            {"count": len(episodes)},
+            node="load_state",
+        )
+        return {
+            "conversation_summary": str(conversation.get("summary", "")),
+            "recent_turns": list(conversation.get("recent_turns", [])),
+            "active_focus": str(conversation.get("active_focus", "")),
+            "active_paper_ids": list(conversation.get("active_paper_ids", [])),
+            "active_arxiv_ids": list(conversation.get("active_arxiv_ids", [])),
+            "memory_context": semantic,
+            "episodic_context": episodes,
+            "conversation_memory_read_count": len(conversation.get("recent_turns", [])),
+            "semantic_memory_read_count": len(semantic),
+            "episodic_memory_read_count": len(episodes),
+        }
 
     def route_query(self, state: AgentState) -> AgentState:
+        self._trace(
+            state,
+            "router.started",
+            {"query_len": len(state.get("raw_user_query", ""))},
+            node="route_query",
+        )
+        started = time.monotonic()
         decision, mode = route_query_with_llm(
             query=state["raw_user_query"],
             llm_client=self.deps.llm_client,
             router_model=self.settings.router_model,
             memory_context=state.get("memory_context", []),
+            conversation_summary=state.get("conversation_summary", ""),
+            recent_turns=state.get("recent_turns", []),
+            episodic_context=state.get("episodic_context", []),
         )
+        llm_latency_ms = int((time.monotonic() - started) * 1000) if mode == "llm" else 0
         self._trace(
             state,
             "router.completed",
@@ -57,6 +107,9 @@ class AgentNodes:
                 "confidence": decision.route_confidence,
                 "reason": decision.route_reason_public,
                 "routing_mode": mode,
+                "model": self.settings.router_model if mode == "llm" else "fallback",
+                "schema": "LLMRouterOutput" if mode == "llm" else "heuristic",
+                "latency_ms": llm_latency_ms,
             },
             node="route_query",
         )
@@ -73,6 +126,7 @@ class AgentNodes:
             "expected_next_node": decision.expected_next_node,
             "retrieval_variant": decision.retrieval_variant,
             "routing_mode": mode,
+            "llm_latency_ms": state.get("llm_latency_ms", 0) + llm_latency_ms,
         }
 
     def clarify(self, state: AgentState) -> AgentState:
@@ -89,6 +143,13 @@ class AgentNodes:
             "forced_retrieval_variant",
             state.get("retrieval_variant", RetrievalVariant.parent_child),
         )
+        self._trace(
+            state,
+            "retrieval.started",
+            {"variant": variant.value},
+            node="retrieve",
+        )
+        started = time.monotonic()
         try:
             result = self.deps.retrieval_service.run(
                 query=state.get("rewritten_query", state["raw_user_query"]),
@@ -117,6 +178,13 @@ class AgentNodes:
                 ),
             }
 
+        retrieval_latency_ms = int((time.monotonic() - started) * 1000)
+        self._trace(
+            state,
+            "retrieval.children_found",
+            {"count": len(result.retrieved_child_ids)},
+            node="retrieve",
+        )
         self._trace(
             state,
             "retrieval.parents_scored",
@@ -125,6 +193,16 @@ class AgentNodes:
                 "selected_parents": result.selected_parent_ids,
                 "top_parent_score": result.signals.top_parent_score,
                 "evidence_status": result.signals.evidence_status.value,
+                "source_ids": [packet.source_id for packet in result.context_packets],
+                "latency_ms": retrieval_latency_ms,
+            },
+            node="retrieve",
+        )
+        self._trace(
+            state,
+            "context.assembled",
+            {
+                "count": len(result.context_packets),
                 "source_ids": [packet.source_id for packet in result.context_packets],
             },
             node="retrieve",
@@ -156,11 +234,19 @@ class AgentNodes:
             "evidence_confidence": result.signals.confidence_band,
             "evidence_signals": result.signals.__dict__,
             "conflict_label": "NONE",
+            "retrieval_latency_ms": state.get("retrieval_latency_ms", 0) + retrieval_latency_ms,
         }
 
     def tool(self, state: AgentState) -> AgentState:
         tool_name = state.get("tool_name", "")
+        tool_started = time.monotonic()
         if tool_name == "arxiv_search":
+            self._trace(
+                state,
+                "tool.started",
+                {"tool_name": tool_name, "tool_args": state.get("tool_args", {})},
+                node="tool",
+            )
             query = str(
                 state.get("tool_args", {}).get(
                     "query", state.get("rewritten_query", state["raw_user_query"])
@@ -199,6 +285,7 @@ class AgentNodes:
                     )
                 )
             sources = [f"[T1] arXiv API arxiv_search query: {payload.query}"]
+            tool_latency_ms = int((time.monotonic() - tool_started) * 1000)
             if lines:
                 answer = "Here are matching arXiv metadata results [T1]:\n\n" + "\n\n".join(lines)
                 for idx, paper in enumerate(output.papers[:5], start=2):
@@ -207,14 +294,39 @@ class AgentNodes:
             else:
                 answer = "No matching arXiv records were returned for this query [T1]."
                 citations = ["T1"]
+            self._trace(
+                state,
+                "tool.completed",
+                {
+                    "tool_name": tool_name,
+                    "status": output.status.value,
+                    "papers": len(output.papers),
+                    "latency_ms": tool_latency_ms,
+                },
+                node="tool",
+            )
             return {
                 "tool_result": {"tool_name": tool_name, **output.model_dump(mode="json")},
                 "final_action": "ANSWER_FROM_TOOL",
                 "final_answer": answer,
                 "citations": citations,
                 "sources_block": build_sources_block(source_lines=[], tool_lines=sources),
+                "tool_latency_ms": state.get("tool_latency_ms", 0) + tool_latency_ms,
+                "tool_calls": [
+                    {
+                        "tool_name": tool_name,
+                        "tool_args": payload.model_dump(mode="json"),
+                        "status": output.status.value,
+                    }
+                ],
             }
         if tool_name == "arxiv_lookup_by_id":
+            self._trace(
+                state,
+                "tool.started",
+                {"tool_name": tool_name, "tool_args": state.get("tool_args", {})},
+                node="tool",
+            )
             tool_args = state.get("tool_args", {})
             raw_ids = tool_args.get("arxiv_ids")
             ids = _coerce_arxiv_ids(raw_ids)
@@ -254,6 +366,7 @@ class AgentNodes:
                     )
                 )
             sources = [f"[T1] arXiv API arxiv_lookup_by_id ids: {', '.join(payload.arxiv_ids)}"]
+            tool_latency_ms = int((time.monotonic() - tool_started) * 1000)
             if lines:
                 answer = "Here are arXiv lookup results [T1]:\n\n" + "\n\n".join(lines)
                 for idx, paper in enumerate(output.papers[:5], start=2):
@@ -262,12 +375,31 @@ class AgentNodes:
             else:
                 answer = "No matching arXiv records were returned for those IDs [T1]."
                 citations = ["T1"]
+            self._trace(
+                state,
+                "tool.completed",
+                {
+                    "tool_name": tool_name,
+                    "status": output.status.value,
+                    "papers": len(output.papers),
+                    "latency_ms": tool_latency_ms,
+                },
+                node="tool",
+            )
             return {
                 "tool_result": {"tool_name": tool_name, **output.model_dump(mode="json")},
                 "final_action": "ANSWER_FROM_TOOL",
                 "final_answer": answer,
                 "citations": citations,
                 "sources_block": build_sources_block(source_lines=[], tool_lines=sources),
+                "tool_latency_ms": state.get("tool_latency_ms", 0) + tool_latency_ms,
+                "tool_calls": [
+                    {
+                        "tool_name": tool_name,
+                        "tool_args": payload.model_dump(mode="json"),
+                        "status": output.status.value,
+                    }
+                ],
             }
         return {
             "final_action": "REFUSE",
@@ -275,6 +407,13 @@ class AgentNodes:
             "refusal_reason": "Router requested an unsupported tool.",
             "citations": [],
             "sources_block": "",
+            "tool_calls": [
+                {
+                    "tool_name": tool_name,
+                    "tool_args": state.get("tool_args", {}),
+                    "status": "unsupported",
+                }
+            ],
         }
 
     def evidence_check(self, state: AgentState) -> AgentState:
@@ -347,7 +486,9 @@ class AgentNodes:
                 "sources_block": "",
             }
 
+        llm_started = time.monotonic()
         llm_answer = self._answer_with_llm(state, packets)
+        llm_latency_ms = int((time.monotonic() - llm_started) * 1000) if llm_answer else 0
         if llm_answer is None:
             llm_answer = self._fallback_answer(packets)
 
@@ -357,6 +498,7 @@ class AgentNodes:
                 "final_answer": llm_answer.clarifying_question or "Could you clarify your request?",
                 "citations": [],
                 "sources_block": "",
+                "llm_latency_ms": state.get("llm_latency_ms", 0) + llm_latency_ms,
             }
         if llm_answer.final_action == "REFUSE":
             return {
@@ -365,16 +507,28 @@ class AgentNodes:
                 or "I can’t answer that from the indexed arXiv corpus.",
                 "citations": [],
                 "sources_block": "",
+                "llm_latency_ms": state.get("llm_latency_ms", 0) + llm_latency_ms,
             }
 
         source_lines = [self._source_line(packet) for packet in packets]
         sources_block = build_sources_block(source_lines=source_lines, tool_lines=[])
         citations = sorted(set(llm_answer.cited_source_ids + llm_answer.cited_tool_ids))
+        self._trace(
+            state,
+            "answer.generated",
+            {
+                "final_action": "ANSWER_FROM_CONTEXT",
+                "citations": citations,
+                "source_ids": [packet["source_id"] for packet in packets],
+            },
+            node="answer",
+        )
         return {
             "final_action": "ANSWER_FROM_CONTEXT",
             "final_answer": llm_answer.answer_text,
             "citations": citations,
             "sources_block": sources_block,
+            "llm_latency_ms": state.get("llm_latency_ms", 0) + llm_latency_ms,
         }
 
     def refuse(self, state: AgentState) -> AgentState:
@@ -416,11 +570,74 @@ class AgentNodes:
             final_action=final_action,
             evidence_status=str(evidence_status),
         )
+        self._trace(
+            state,
+            "citation.deterministic_validated",
+            {
+                "status": "ok" if ok else "failed",
+                "message": message,
+                "allowed_source_ids": sorted(source_ids),
+                "allowed_tool_ids": sorted(tool_ids),
+            },
+            node="citation_validate",
+        )
         if ok:
+            llm_validation = self._llm_citation_validate(
+                state=state,
+                final_action=final_action,
+                answer=answer,
+                sources_block=sources_block,
+                source_ids=sorted(source_ids),
+                tool_ids=sorted(tool_ids),
+            )
+            if llm_validation is not None and not llm_validation.valid:
+                self._trace(
+                    state,
+                    "citation.llm_validated",
+                    {
+                        "status": "failed",
+                        "verdict": llm_validation.verdict,
+                        "unknown_citation_ids": llm_validation.unknown_citation_ids,
+                        "missing_citation_spans": llm_validation.missing_citation_spans[:3],
+                    },
+                    node="citation_validate",
+                )
+                self._trace(
+                    state,
+                    "citation.validated",
+                    {"status": "failed", "mode": "llm", "verdict": llm_validation.verdict},
+                    node="citation_validate",
+                )
+                return {
+                    "final_action": "REFUSE",
+                    "final_answer": (
+                        "I can’t provide a grounded answer with valid citations for that query."
+                    ),
+                    "citations": [],
+                    "sources_block": "",
+                }
+            if llm_validation is not None:
+                self._trace(
+                    state,
+                    "citation.llm_validated",
+                    {"status": "ok", "verdict": llm_validation.verdict},
+                    node="citation_validate",
+                )
+            else:
+                self._trace(
+                    state,
+                    "citation.llm_validated",
+                    {"status": "skipped"},
+                    node="citation_validate",
+                )
             self._trace(
                 state,
                 "citation.validated",
-                {"status": "ok", "citations": sorted(source_ids | tool_ids)},
+                {
+                    "status": "ok",
+                    "citations": sorted(source_ids | tool_ids),
+                    "mode": "deterministic+llm",
+                },
                 node="citation_validate",
             )
             if state.get("trace_id"):
@@ -438,7 +655,13 @@ class AgentNodes:
         self._trace(
             state,
             "citation.validated",
-            {"status": "failed", "message": message},
+            {"status": "failed", "message": message, "mode": "deterministic"},
+            node="citation_validate",
+        )
+        self._trace(
+            state,
+            "citation.llm_validated",
+            {"status": "skipped", "reason": "deterministic_failed"},
             node="citation_validate",
         )
         return {
@@ -450,12 +673,112 @@ class AgentNodes:
             "sources_block": "",
         }
 
+    def _llm_citation_validate(
+        self,
+        *,
+        state: AgentState,
+        final_action: str,
+        answer: str,
+        sources_block: str,
+        source_ids: list[str],
+        tool_ids: list[str],
+    ) -> LLMCitationValidationOutput | None:
+        if not self.deps.llm_client.enabled():
+            return None
+        started = time.monotonic()
+        try:
+            out = self.deps.llm_client.complete_json(
+                model=self.settings.evidence_model,
+                schema=LLMCitationValidationOutput,
+                system_prompt=CITATION_SYSTEM_PROMPT,
+                user_prompt=citation_user_prompt(
+                    final_action=final_action,
+                    answer_text=answer,
+                    sources_block=sources_block,
+                    allowed_source_ids=source_ids,
+                    allowed_tool_ids=tool_ids,
+                ),
+            )
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.evidence_model,
+                    "schema": "LLMCitationValidationOutput",
+                    "status": "ok",
+                    "latency_ms": elapsed,
+                },
+                node="citation_validate",
+            )
+            return out
+        except Exception as err:  # noqa: BLE001
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.evidence_model,
+                    "schema": "LLMCitationValidationOutput",
+                    "status": "failed",
+                    "latency_ms": elapsed,
+                    "error": str(err),
+                },
+                node="citation_validate",
+            )
+            return None
+
     def memory_update(self, state: AgentState) -> AgentState:
         if state.get("final_action") not in {"ANSWER_FROM_CONTEXT", "ANSWER_FROM_TOOL"}:
             return {}
         memory_write = self._memory_write_decision(state)
+        self._trace(
+            state,
+            "memory.write_decision",
+            {
+                "should_write": memory_write.should_write,
+                "kind": memory_write.kind,
+                "key": memory_write.key,
+            },
+            node="memory_update",
+        )
         if not memory_write.should_write or not memory_write.key or not memory_write.value:
-            return {}
+            conversation_update = self.deps.memory_service.update_conversation_after_turn(
+                thread_id=state.get("thread_id", "default"),
+                turn_id=state["turn_id"],
+                user_query=state.get("raw_user_query", ""),
+                assistant_answer=state.get("final_answer", ""),
+                route_action=state.get("route_action", ""),
+                final_action=state.get("final_action", ""),
+            )
+            self._trace(
+                state,
+                "conversation.updated",
+                {
+                    "thread_id": state.get("thread_id", "default"),
+                    "active_focus": conversation_update.get("active_focus", ""),
+                },
+                node="memory_update",
+            )
+            episode_id = self.deps.memory_service.write_episode(
+                thread_id=state.get("thread_id", "default"),
+                turn_id=state["turn_id"],
+                user_query=state.get("raw_user_query", ""),
+                route_action=state.get("route_action", ""),
+                route_confidence=state.get("route_confidence"),
+                retrieved_child_ids=state.get("retrieved_child_ids", []),
+                selected_parent_ids=state.get("selected_parent_ids", []),
+                tool_calls=state.get("tool_calls", []),
+                final_action=state.get("final_action", ""),
+                final_answer_summary=_truncate_text(str(state.get("final_answer", "")), 280),
+            )
+            self._trace(
+                state,
+                "episode.written",
+                {"episode_id": episode_id},
+                node="memory_update",
+            )
+            return {"episode_id": episode_id}
 
         memory_id = self.deps.memory_service.write(
             kind=memory_write.kind,
@@ -469,7 +792,42 @@ class AgentNodes:
             "memory.write",
             {"memory_id": memory_id, "key": memory_write.key, "kind": memory_write.kind},
         )
-        return {}
+        conversation_update = self.deps.memory_service.update_conversation_after_turn(
+            thread_id=state.get("thread_id", "default"),
+            turn_id=state["turn_id"],
+            user_query=state.get("raw_user_query", ""),
+            assistant_answer=state.get("final_answer", ""),
+            route_action=state.get("route_action", ""),
+            final_action=state.get("final_action", ""),
+        )
+        self._trace(
+            state,
+            "conversation.updated",
+            {
+                "thread_id": state.get("thread_id", "default"),
+                "active_focus": conversation_update.get("active_focus", ""),
+            },
+            node="memory_update",
+        )
+        episode_id = self.deps.memory_service.write_episode(
+            thread_id=state.get("thread_id", "default"),
+            turn_id=state["turn_id"],
+            user_query=state.get("raw_user_query", ""),
+            route_action=state.get("route_action", ""),
+            route_confidence=state.get("route_confidence"),
+            retrieved_child_ids=state.get("retrieved_child_ids", []),
+            selected_parent_ids=state.get("selected_parent_ids", []),
+            tool_calls=state.get("tool_calls", []),
+            final_action=state.get("final_action", ""),
+            final_answer_summary=_truncate_text(str(state.get("final_answer", "")), 280),
+        )
+        self._trace(
+            state,
+            "episode.written",
+            {"episode_id": episode_id},
+            node="memory_update",
+        )
+        return {"episode_id": episode_id}
 
     def _trace(
         self,
@@ -515,8 +873,9 @@ class AgentNodes:
             return None
         if not self.deps.llm_client.enabled():
             return None
+        started = time.monotonic()
         try:
-            return self.deps.llm_client.complete_json(
+            out = self.deps.llm_client.complete_json(
                 model=self.settings.evidence_model,
                 schema=LLMEvidenceOutput,
                 system_prompt=EVIDENCE_SYSTEM_PROMPT,
@@ -526,7 +885,32 @@ class AgentNodes:
                     retrieval_signals=state.get("evidence_signals", {}),
                 ),
             )
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.evidence_model,
+                    "schema": "LLMEvidenceOutput",
+                    "status": "ok",
+                    "latency_ms": elapsed,
+                },
+                node="evidence_check",
+            )
+            return out
         except Exception:  # noqa: BLE001
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.evidence_model,
+                    "schema": "LLMEvidenceOutput",
+                    "status": "failed",
+                    "latency_ms": elapsed,
+                },
+                node="evidence_check",
+            )
             return None
 
     def _answer_with_llm(
@@ -537,6 +921,7 @@ class AgentNodes:
         evidence_status = state.get("evidence_status", EvidenceStatus.insufficient)
         if hasattr(evidence_status, "value"):
             evidence_status = evidence_status.value
+        started = time.monotonic()
         try:
             answer = self.deps.llm_client.complete_json(
                 model=self.settings.answer_model,
@@ -549,10 +934,34 @@ class AgentNodes:
                     tool_result=state.get("tool_result"),
                 ),
             )
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.answer_model,
+                    "schema": "LLMAnswerOutput",
+                    "status": "ok",
+                    "latency_ms": elapsed,
+                },
+                node="answer",
+            )
             if answer.final_action == "ANSWER_FROM_CONTEXT" and not answer.answer_text:
                 return None
             return answer
         except Exception:  # noqa: BLE001
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.answer_model,
+                    "schema": "LLMAnswerOutput",
+                    "status": "failed",
+                    "latency_ms": elapsed,
+                },
+                node="answer",
+            )
             return None
 
     def _fallback_answer(self, packets: list[dict[str, object]]) -> LLMAnswerOutput:
@@ -597,6 +1006,7 @@ class AgentNodes:
                 value=query[:200],
                 confidence=0.8,
             )
+        started = time.monotonic()
         try:
             decision = self.deps.llm_client.complete_json(
                 model=self.settings.evidence_model,
@@ -608,8 +1018,32 @@ class AgentNodes:
                     final_action=state.get("final_action", ""),
                 ),
             )
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.evidence_model,
+                    "schema": "LLMMemoryWriteOutput",
+                    "status": "ok",
+                    "latency_ms": elapsed,
+                },
+                node="memory_update",
+            )
             return decision
         except Exception:  # noqa: BLE001
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.evidence_model,
+                    "schema": "LLMMemoryWriteOutput",
+                    "status": "failed",
+                    "latency_ms": elapsed,
+                },
+                node="memory_update",
+            )
             return LLMMemoryWriteOutput(should_write=False)
 
 

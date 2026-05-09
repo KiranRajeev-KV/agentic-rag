@@ -31,12 +31,35 @@ class EvalRunner:
         retrieval_metrics = []
         refusal_misses = 0
         for case in cases:
+            trace_writer = self.graph_runner.trace_writer
+            case_trace = trace_writer.start(thread_id=f"eval_{variant.value}", run_mode="eval")
+            trace_writer.event(
+                trace_id=case_trace.trace_id,
+                level="info",
+                event="eval.case_started",
+                payload={"case_id": case.id, "variant": variant.value},
+            )
             state = self.graph_runner.run(
                 case.question,
                 thread_id=f"eval_{variant.value}",
                 retrieval_variant=variant,
             )
             result = score_case(case, state)
+            trace_writer.event(
+                trace_id=case_trace.trace_id,
+                level="info",
+                event="eval.case_scored",
+                payload={
+                    "case_id": case.id,
+                    "variant": variant.value,
+                    "score": result.score,
+                    "final_action": result.actual_final_action,
+                },
+            )
+            trace_writer.complete(
+                trace_id=case_trace.trace_id,
+                final_action=result.actual_final_action,
+            )
             case_results.append(result)
             retrieval_metrics.append(_retrieval_metrics(case=case, state=state))
             if case.should_refuse and state.get("final_action") != "REFUSE":
@@ -59,6 +82,21 @@ class EvalRunner:
             "retrieval_metrics": _aggregate_retrieval_metrics(retrieval_metrics),
             "results": [item.model_dump(mode="json") for item in case_results],
         }
+        eval_trace = self.graph_runner.trace_writer.start(
+            thread_id=f"eval_{variant.value}",
+            run_mode="eval",
+        )
+        self.graph_runner.trace_writer.event(
+            trace_id=eval_trace.trace_id,
+            level="info",
+            event="eval.completed",
+            payload={
+                "variant": variant.value,
+                "cases": len(cases),
+                "normalized_score": normalized_score,
+            },
+        )
+        self.graph_runner.trace_writer.complete(trace_id=eval_trace.trace_id, final_action="EVAL")
         self._write_reports(summary)
         self._persist_eval(summary)
         return summary

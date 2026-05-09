@@ -78,12 +78,16 @@ def ingest_command(
 @app.command("ask")
 def ask_command(
     question: str,
+    thread_id: Annotated[
+        str,
+        typer.Option("--thread-id", help="Conversation thread id for memory-scoped follow-up."),
+    ] = "default",
     debug: Annotated[bool, typer.Option("--debug")] = False,
 ) -> None:
     settings = get_settings()
     initialize_storage(settings=settings, init_qdrant=False)
     runner = AskGraphRunner(settings=settings)
-    final_state = runner.run(question)
+    final_state = runner.run(question, thread_id=thread_id)
     final_answer = final_state.get("final_answer", "")
     typer.echo(final_answer)
     if debug:
@@ -277,22 +281,52 @@ def _run_index(settings: Settings, limit: int, batch_size: int, force: bool) -> 
 
 def _print_debug_summary(state: dict[str, Any]) -> None:
     trace_id = state.get("trace_id", "unknown")
+    thread_id = state.get("thread_id", "default")
+    turn_id = state.get("turn_id", "unknown")
     route = state.get("route_action", "unknown")
+    route_mode = state.get("routing_mode", "unknown")
+    route_conf = state.get("route_confidence", 0.0)
+    route_reason = state.get("route_reason_public", "")
     evidence_status = state.get("evidence_status", "unknown")
     if hasattr(evidence_status, "value"):
         evidence_status = evidence_status.value
+    evidence_confidence = state.get("evidence_confidence", "unknown")
     retrieved_children = len(state.get("retrieved_child_ids", []))
-    selected_parents = len(state.get("selected_parent_ids", []))
+    selected_parents = state.get("selected_parent_ids", [])
+    parent_scores = state.get("parent_scores", {})
     context_packets = [packet["source_id"] for packet in state.get("context_packets", [])]
     final_action = state.get("final_action", "unknown")
+    conversation_count = state.get("conversation_memory_read_count", 0)
+    semantic_count = state.get("semantic_memory_read_count", 0)
+    episodic_count = state.get("episodic_memory_read_count", 0)
+    total_latency = state.get("total_latency_ms", 0)
+    retrieval_latency = state.get("retrieval_latency_ms", 0)
+    llm_latency = state.get("llm_latency_ms", 0)
+    tool_latency = state.get("tool_latency_ms", 0)
     typer.echo(
         f"\nTrace: {trace_id}\n"
+        f"Thread: {thread_id}\n"
+        f"Turn: {turn_id}\n"
+        "Memory read: "
+        f"conversation={conversation_count}, "
+        f"semantic={semantic_count}, "
+        f"episodic={episodic_count}\n"
         f"Route: {route}\n"
+        f"Routing mode: {route_mode}\n"
+        f"Route confidence: {route_conf}\n"
+        f"Route reason: {route_reason}\n"
         f"Retrieved children: {retrieved_children}\n"
         f"Selected parents: {selected_parents}\n"
+        f"Parent scores: {parent_scores}\n"
         f"Evidence status: {evidence_status}\n"
+        f"Evidence confidence: {evidence_confidence}\n"
         f"Context packets: {', '.join(context_packets) if context_packets else '(none)'}\n"
-        f"Final action: {final_action}"
+        f"Final action: {final_action}\n"
+        "Latency ms: "
+        f"total={total_latency}, "
+        f"retrieval={retrieval_latency}, "
+        f"llm={llm_latency}, "
+        f"tool={tool_latency}"
     )
 
 
