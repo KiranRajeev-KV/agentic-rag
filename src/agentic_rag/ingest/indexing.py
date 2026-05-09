@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,7 +76,7 @@ class ChildChunkIndexer:
             for row, vector in zip(rows, batch.dense_vectors, strict=False):
                 points.append(
                     models.PointStruct(
-                        id=row["chunk_id"],
+                        id=_point_uuid(row["chunk_id"]),
                         vector=vector,
                         payload=_payload_from_row(row),
                     )
@@ -140,3 +141,7 @@ def _payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "chunk_index": row["chunk_index"],
         "token_count": row["token_count"],
     }
+
+
+def _point_uuid(chunk_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentic-rag:{chunk_id}"))

@@ -1,6 +1,6 @@
 services:
   qdrant:
-    image: qdrant/qdrant:v1.15.1
+    image: qdrant/qdrant:v1.17.1
     container_name: agentic-rag-qdrant
     ports:
       - "6333:6333"
