@@ -17,6 +17,7 @@ data/qdrant/
 data/*.sqlite
 data/*.db
 runs/logs/
+runs/cache/
 runs/traces/
 runs/reports/
 *.jsonl

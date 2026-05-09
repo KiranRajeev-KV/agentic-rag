@@ -69,7 +69,7 @@ class ArxivToolset:
             return ArxivToolOutput(status=ToolStatus.error, papers=[], errors=[str(err)])
 
     def _get_recent(self, payload: ArxivGetRecentInput) -> ArxivToolOutput:
-        query = payload.query_filter if payload.query_filter else "*"
+        query = payload.query_filter.strip() if payload.query_filter else ""
         date_to = datetime.now(UTC).date()
         date_from = date_to - timedelta(days=payload.days_back)
         try:
@@ -102,7 +102,10 @@ class ArxivToolset:
                 self._cache.delete(cache_key)
 
         result = handler(payload_model)
-        self._cache.set(cache_key, result.model_dump(mode="json"))
+        if result.status != ToolStatus.error:
+            self._cache.set(cache_key, result.model_dump(mode="json"))
+        else:
+            self._cache.delete(cache_key)
         return result
 
 

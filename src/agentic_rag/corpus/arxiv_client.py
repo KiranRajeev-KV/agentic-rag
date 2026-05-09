@@ -83,15 +83,22 @@ def _build_query(
     date_from: date | None,
     date_to: date | None,
 ) -> str:
-    query_term = f"all:{query}"
+    cleaned = query.strip()
+    query_term = ""
+    if cleaned and cleaned != "*":
+        query_term = f"all:{cleaned}"
     cat_clause = " OR ".join(f"cat:{category}" for category in categories) if categories else ""
     date_clause = _date_range_clause(date_from=date_from, date_to=date_to)
 
-    clauses = [query_term]
+    clauses: list[str] = []
+    if query_term:
+        clauses.append(query_term)
     if cat_clause:
         clauses.append(f"({cat_clause})")
     if date_clause:
         clauses.append(date_clause)
+    if not clauses:
+        return "cat:cs.AI"
     return " AND ".join(clauses)
 
 

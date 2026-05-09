@@ -82,10 +82,20 @@ def test_lookup_error_returns_error_status(tmp_path: Path, monkeypatch) -> None:
     toolset = _build_toolset(tmp_path=tmp_path, monkeypatch=monkeypatch)
 
     class _ErrorClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
         def lookup_by_ids(self, arxiv_ids: list[str]) -> list[ArxivPaperMetadata]:
+            del arxiv_ids
+            self.calls += 1
             raise RuntimeError("network down")
 
-    toolset._client = _ErrorClient()  # type: ignore[assignment]  # noqa: SLF001
-    output = toolset.arxiv_lookup_by_id(ArxivLookupByIdInput(arxiv_ids=["2501.00002v1"]))
-    assert output.status == ToolStatus.error
-    assert output.errors
+    error_client = _ErrorClient()
+    toolset._client = error_client  # type: ignore[assignment]  # noqa: SLF001
+    payload = ArxivLookupByIdInput(arxiv_ids=["2501.00002v1"])
+    first = toolset.arxiv_lookup_by_id(payload)
+    second = toolset.arxiv_lookup_by_id(payload)
+    assert first.status == ToolStatus.error
+    assert second.status == ToolStatus.error
+    assert first.errors
+    assert error_client.calls == 2
