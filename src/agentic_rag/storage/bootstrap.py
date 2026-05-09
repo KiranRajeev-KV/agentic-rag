@@ -18,7 +18,11 @@ def initialize_storage(settings: Settings, init_qdrant: bool = False) -> None:
 
     if init_qdrant:
         client = get_client(settings.qdrant_url)
-        ensure_child_chunk_collection(client=client, collection_name=settings.qdrant_collection)
+        ensure_child_chunk_collection(
+            client=client,
+            collection_name=settings.qdrant_collection,
+            vector_size=settings.embedding_dimensions,
+        )
 
 
 def _migrate_child_chunk_columns(store: SQLiteStore) -> None:
