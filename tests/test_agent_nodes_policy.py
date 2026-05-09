@@ -128,3 +128,73 @@ def test_tool_citation_validate_uses_sources_ids_for_tool_answers() -> None:
     }
     out = nodes.citation_validate(state)
     assert out.get("final_answer", "").startswith("Here are results [T1]")
+
+
+def test_tool_lookup_by_id_keeps_full_abstract() -> None:
+    full_abstract = "A" * 420 + " END_MARKER"
+
+    class _Toolset:
+        def arxiv_lookup_by_id(self, payload):  # noqa: ANN001
+            del payload
+            return ArxivToolOutput(
+                status=ToolStatus.ok,
+                papers=[
+                    ArxivPaperMetadata(
+                        arxiv_id="2501.00001",
+                        version="v1",
+                        title="Lookup Paper",
+                        authors=["A", "B", "C", "D"],
+                        abstract=full_abstract,
+                        categories=["cs.AI"],
+                    )
+                ],
+            )
+
+    nodes = _build_nodes(_FakeMemoryService(), toolset=_Toolset())
+    out = nodes.tool(
+        {
+            "raw_user_query": "lookup 2501.00001",
+            "rewritten_query": "lookup 2501.00001",
+            "tool_name": "arxiv_lookup_by_id",
+            "tool_args": {"arxiv_ids": ["2501.00001"]},
+        }
+    )
+    answer = out["final_answer"]
+    assert "END_MARKER" in answer
+    assert "Abstract: " in answer
+    assert "et al." in answer
+
+
+def test_tool_search_truncates_abstract() -> None:
+    long_abstract = "B" * 500 + " TAIL_MARKER"
+
+    class _Toolset:
+        def arxiv_search(self, payload):  # noqa: ANN001
+            del payload
+            return ArxivToolOutput(
+                status=ToolStatus.ok,
+                papers=[
+                    ArxivPaperMetadata(
+                        arxiv_id="2501.00002",
+                        version="v1",
+                        title="Search Paper",
+                        authors=["A"],
+                        abstract=long_abstract,
+                        categories=["cs.AI"],
+                    )
+                ],
+            )
+
+    nodes = _build_nodes(_FakeMemoryService(), toolset=_Toolset())
+    out = nodes.tool(
+        {
+            "raw_user_query": "search arxiv transformers",
+            "rewritten_query": "search arxiv transformers",
+            "tool_name": "arxiv_search",
+            "tool_args": {"query": "transformers"},
+        }
+    )
+    answer = out["final_answer"]
+    assert "Abstract: " in answer
+    assert "TAIL_MARKER" not in answer
+    assert "..." in answer

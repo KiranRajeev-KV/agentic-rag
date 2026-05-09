@@ -191,10 +191,16 @@ class AgentNodes:
                 )
             lines = []
             for idx, paper in enumerate(output.papers[:5], start=2):
-                lines.append(f"[T{idx}] {paper.title} arXiv:{paper.arxiv_id}")
+                lines.append(
+                    _format_tool_paper_line(
+                        citation_id=f"T{idx}",
+                        paper=paper,
+                        include_full_abstract=False,
+                    )
+                )
             sources = [f"[T1] arXiv API arxiv_search query: {payload.query}"]
             if lines:
-                answer = "Here are matching arXiv metadata results [T1]:\n" + "\n".join(lines)
+                answer = "Here are matching arXiv metadata results [T1]:\n\n" + "\n\n".join(lines)
                 for idx, paper in enumerate(output.papers[:5], start=2):
                     sources.append(f"[T{idx}] {paper.title}, arXiv:{paper.arxiv_id}")
                 citations = [f"T{idx}" for idx in range(1, len(lines) + 2)]
@@ -240,10 +246,16 @@ class AgentNodes:
                 )
             lines = []
             for idx, paper in enumerate(output.papers[:5], start=2):
-                lines.append(f"[T{idx}] {paper.title} arXiv:{paper.arxiv_id}")
+                lines.append(
+                    _format_tool_paper_line(
+                        citation_id=f"T{idx}",
+                        paper=paper,
+                        include_full_abstract=True,
+                    )
+                )
             sources = [f"[T1] arXiv API arxiv_lookup_by_id ids: {', '.join(payload.arxiv_ids)}"]
             if lines:
-                answer = "Here are arXiv lookup results [T1]:\n" + "\n".join(lines)
+                answer = "Here are arXiv lookup results [T1]:\n\n" + "\n\n".join(lines)
                 for idx, paper in enumerate(output.papers[:5], start=2):
                     sources.append(f"[T{idx}] {paper.title}, arXiv:{paper.arxiv_id}")
                 citations = [f"T{idx}" for idx in range(1, len(lines) + 2)]
@@ -632,3 +644,56 @@ def _coerce_bool(value: object, default: bool) -> bool:
         if lowered in {"0", "false", "no", "n"}:
             return False
     return default
+
+
+def _format_tool_paper_line(*, citation_id: str, paper: object, include_full_abstract: bool) -> str:
+    title = str(getattr(paper, "title", "") or "").strip() or "Untitled"
+    arxiv_id = str(getattr(paper, "arxiv_id", "") or "").strip()
+    version = str(getattr(paper, "version", "") or "").strip()
+    arxiv_label = f"{arxiv_id}{version}" if version else arxiv_id
+    primary_category = str(getattr(paper, "primary_category", "") or "").strip()
+    categories = getattr(paper, "categories", []) or []
+    category = primary_category or (categories[0] if categories else "unknown")
+    published = _format_date(getattr(paper, "published_at", None))
+    updated = _format_date(getattr(paper, "updated_at", None))
+    authors = getattr(paper, "authors", []) or []
+    author_line = _format_authors([str(a) for a in authors if str(a).strip()])
+
+    abstract = str(getattr(paper, "abstract", "") or "").strip()
+    if abstract and not include_full_abstract:
+        abstract = _truncate_text(abstract, max_chars=320)
+
+    line_parts = [
+        f"[{citation_id}] {title}",
+        f"arXiv:{arxiv_label} | Category: {category} | Published: {published} | Updated: {updated}",
+        f"Authors: {author_line}",
+    ]
+    if abstract:
+        line_parts.append(f"Abstract: {abstract}")
+    return "\n".join(line_parts)
+
+
+def _format_authors(authors: list[str]) -> str:
+    if not authors:
+        return "unknown"
+    if len(authors) <= 3:
+        return ", ".join(authors)
+    return f"{', '.join(authors[:3])}, et al."
+
+
+def _format_date(value: object) -> str:
+    if value is None:
+        return "unknown"
+    if hasattr(value, "date"):
+        try:
+            return str(value.date())
+        except Exception:  # noqa: BLE001
+            pass
+    text = str(value).strip()
+    return text[:10] if len(text) >= 10 else text or "unknown"
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
