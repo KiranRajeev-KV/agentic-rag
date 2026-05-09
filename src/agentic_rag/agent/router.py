@@ -34,15 +34,32 @@ def route_query_with_llm(
     llm_client: OpenAILLMClient | None,
     router_model: str,
     memory_context: list[dict[str, str]],
+    conversation_summary: str = "",
+    recent_turns: list[dict[str, str]] | None = None,
+    episodic_context: list[dict[str, str]] | None = None,
 ) -> tuple[RouterDecision, str]:
     if llm_client is None or not llm_client.enabled():
-        return _fallback_route_query(query), "fallback"
+        return (
+            _fallback_route_query_with_context(
+                query=query,
+                conversation_summary=conversation_summary,
+                recent_turns=recent_turns or [],
+                episodic_context=episodic_context or [],
+            ),
+            "fallback",
+        )
     try:
         llm_output = llm_client.complete_json(
             model=router_model,
             schema=LLMRouterOutput,
             system_prompt=ROUTER_SYSTEM_PROMPT,
-            user_prompt=router_user_prompt(query=query, memory_context=memory_context),
+            user_prompt=router_user_prompt(
+                query=query,
+                memory_context=memory_context,
+                conversation_summary=conversation_summary,
+                recent_turns=recent_turns or [],
+                episodic_context=episodic_context or [],
+            ),
         )
         return (
             RouterDecision(
@@ -61,7 +78,42 @@ def route_query_with_llm(
             "llm",
         )
     except Exception:  # noqa: BLE001
-        return _fallback_route_query(query), "fallback"
+        return (
+            _fallback_route_query_with_context(
+                query=query,
+                conversation_summary=conversation_summary,
+                recent_turns=recent_turns or [],
+                episodic_context=episodic_context or [],
+            ),
+            "fallback",
+        )
+
+
+def _fallback_route_query_with_context(
+    *,
+    query: str,
+    conversation_summary: str,
+    recent_turns: list[dict[str, str]],
+    episodic_context: list[dict[str, str]],
+) -> RouterDecision:
+    lowered = query.strip().lower()
+    follow_up_markers = ("continue", "what about it", "that paper", "previous point", "and that?")
+    if any(marker in lowered for marker in follow_up_markers):
+        if conversation_summary.strip() or recent_turns or episodic_context:
+            rewritten = (
+                f"{query}\n\nConversation summary: {conversation_summary[:240]}"
+                if conversation_summary
+                else query
+            )
+            return RouterDecision(
+                action="RETRIEVE",
+                route_confidence=0.72,
+                route_reason_public="Follow-up query resolved from thread conversation memory.",
+                rewritten_query=rewritten,
+                expected_next_node="retrieve",
+                retrieval_variant=RetrievalVariant.parent_child,
+            )
+    return _fallback_route_query(query)
 
 
 def _fallback_route_query(query: str) -> RouterDecision:

@@ -13,6 +13,21 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 @dataclass(frozen=True)
 class PaperRecord:
     paper_id: str
@@ -32,6 +47,10 @@ class PaperRecord:
     doi: str | None = None
     comment: str | None = None
     source_query: str | None = None
+    discovery_source_query: str | None = None
+    discovery_filter_terms: list[str] | None = None
+    discovery_filter_reason: str | None = None
+    discovery_days_back: int | None = None
     pdf_sha256: str | None = None
     parser_name: str | None = None
     parser_version: str | None = None
@@ -50,10 +69,12 @@ class PaperRepository:
             INSERT INTO papers (
               paper_id, arxiv_id, arxiv_version, title, authors, abstract,
               primary_category, categories, published_at, updated_at, pdf_url,
-              abs_url, doi, comment, source_query, ingested_at, pdf_sha256,
+              abs_url, doi, comment, source_query, discovery_source_query,
+              discovery_filter_terms, discovery_filter_reason, discovery_days_back,
+              ingested_at, pdf_sha256,
               parse_status, parser_name, parser_version, chunker_name,
               chunker_config_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(paper_id) DO UPDATE SET
               arxiv_id=excluded.arxiv_id,
               arxiv_version=excluded.arxiv_version,
@@ -69,6 +90,10 @@ class PaperRepository:
               doi=excluded.doi,
               comment=excluded.comment,
               source_query=excluded.source_query,
+              discovery_source_query=excluded.discovery_source_query,
+              discovery_filter_terms=excluded.discovery_filter_terms,
+              discovery_filter_reason=excluded.discovery_filter_reason,
+              discovery_days_back=excluded.discovery_days_back,
               ingested_at=excluded.ingested_at,
               pdf_sha256=excluded.pdf_sha256,
               parse_status=excluded.parse_status,
@@ -93,6 +118,10 @@ class PaperRepository:
                 record.doi,
                 record.comment,
                 record.source_query,
+                record.discovery_source_query,
+                json.dumps(record.discovery_filter_terms or [], ensure_ascii=True),
+                record.discovery_filter_reason,
+                record.discovery_days_back,
                 ingested_at,
                 record.pdf_sha256,
                 record.parse_status,
@@ -428,6 +457,202 @@ class SemanticMemoryRepository:
             (namespace, limit),
         )
         return [dict(row) for row in rows]
+
+
+class ConversationRepository:
+    def __init__(self, store: SQLiteStore) -> None:
+        self.store = store
+
+    def ensure_thread(self, thread_id: str) -> None:
+        now = _utc_now()
+        self.store.execute(
+            """
+            INSERT INTO conversation_threads (
+              thread_id, active_focus, active_paper_ids, active_arxiv_ids, created_at, updated_at
+            ) VALUES (?, '', '[]', '[]', ?, ?)
+            ON CONFLICT(thread_id) DO UPDATE SET
+              updated_at=excluded.updated_at
+            """,
+            (thread_id, now, now),
+        )
+
+    def update_thread_focus(
+        self,
+        *,
+        thread_id: str,
+        active_focus: str,
+        active_paper_ids: list[str],
+        active_arxiv_ids: list[str],
+    ) -> None:
+        now = _utc_now()
+        self.store.execute(
+            """
+            UPDATE conversation_threads
+            SET active_focus = ?, active_paper_ids = ?, active_arxiv_ids = ?, updated_at = ?
+            WHERE thread_id = ?
+            """,
+            (
+                active_focus,
+                json.dumps(active_paper_ids, ensure_ascii=True),
+                json.dumps(active_arxiv_ids, ensure_ascii=True),
+                now,
+                thread_id,
+            ),
+        )
+
+    def insert_turn(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        role: str,
+        content: str,
+        route_action: str | None = None,
+        final_action: str | None = None,
+    ) -> None:
+        self.store.execute(
+            """
+            INSERT INTO conversation_turns (
+              thread_id, turn_id, role, content, route_action, final_action, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (thread_id, turn_id, role, content, route_action, final_action, _utc_now()),
+        )
+
+    def list_recent_turns(self, thread_id: str, limit: int = 6) -> list[dict[str, Any]]:
+        rows = self.store.fetchall(
+            """
+            SELECT thread_id, turn_id, role, content, route_action, final_action, created_at
+            FROM conversation_turns
+            WHERE thread_id = ?
+            ORDER BY turn_row_id DESC
+            LIMIT ?
+            """,
+            (thread_id, limit),
+        )
+        ordered = [dict(row) for row in reversed(rows)]
+        return ordered
+
+    def get_thread_context(self, thread_id: str) -> dict[str, Any]:
+        rows = self.store.fetchall(
+            """
+            SELECT thread_id, active_focus, active_paper_ids, active_arxiv_ids, updated_at
+            FROM conversation_threads
+            WHERE thread_id = ?
+            LIMIT 1
+            """,
+            (thread_id,),
+        )
+        if not rows:
+            return {
+                "thread_id": thread_id,
+                "active_focus": "",
+                "active_paper_ids": [],
+                "active_arxiv_ids": [],
+            }
+        row = dict(rows[0])
+        return {
+            "thread_id": thread_id,
+            "active_focus": str(row.get("active_focus") or ""),
+            "active_paper_ids": _json_list(row.get("active_paper_ids")),
+            "active_arxiv_ids": _json_list(row.get("active_arxiv_ids")),
+            "updated_at": row.get("updated_at"),
+        }
+
+    def upsert_summary(self, thread_id: str, summary: str) -> None:
+        now = _utc_now()
+        self.store.execute(
+            """
+            INSERT INTO conversation_summaries (thread_id, summary, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(thread_id) DO UPDATE SET
+              summary=excluded.summary,
+              updated_at=excluded.updated_at
+            """,
+            (thread_id, summary, now),
+        )
+
+    def get_summary(self, thread_id: str) -> str:
+        rows = self.store.fetchall(
+            """
+            SELECT summary
+            FROM conversation_summaries
+            WHERE thread_id = ?
+            LIMIT 1
+            """,
+            (thread_id,),
+        )
+        if not rows:
+            return ""
+        return str(rows[0]["summary"] or "")
+
+
+class EpisodeRepository:
+    def __init__(self, store: SQLiteStore) -> None:
+        self.store = store
+
+    def insert_episode(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        user_query: str,
+        route_action: str,
+        route_confidence: float | None,
+        retrieved_child_ids: list[str],
+        selected_parent_ids: list[str],
+        tool_calls: list[dict[str, Any]],
+        final_action: str,
+        final_answer_summary: str,
+    ) -> str:
+        episode_id = f"ep_{uuid.uuid4().hex[:12]}"
+        self.store.execute(
+            """
+            INSERT INTO episodes (
+              episode_id, thread_id, turn_id, user_query, route_action, route_confidence,
+              retrieved_child_ids, selected_parent_ids, tool_calls, final_action,
+              final_answer_summary, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                episode_id,
+                thread_id,
+                turn_id,
+                user_query,
+                route_action,
+                route_confidence,
+                json.dumps(retrieved_child_ids, ensure_ascii=True),
+                json.dumps(selected_parent_ids, ensure_ascii=True),
+                json.dumps(tool_calls, ensure_ascii=True),
+                final_action,
+                final_answer_summary,
+                _utc_now(),
+            ),
+        )
+        return episode_id
+
+    def list_recent_by_thread(self, thread_id: str, limit: int = 6) -> list[dict[str, Any]]:
+        rows = self.store.fetchall(
+            """
+            SELECT
+              episode_id, thread_id, turn_id, user_query, route_action, route_confidence,
+              retrieved_child_ids, selected_parent_ids, tool_calls, final_action,
+              final_answer_summary, created_at
+            FROM episodes
+            WHERE thread_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (thread_id, limit),
+        )
+        episodes: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["retrieved_child_ids"] = _json_list(item.get("retrieved_child_ids"))
+            item["selected_parent_ids"] = _json_list(item.get("selected_parent_ids"))
+            item["tool_calls"] = _json_list(item.get("tool_calls"))
+            episodes.append(item)
+        return episodes
 
 
 class TraceRepository:

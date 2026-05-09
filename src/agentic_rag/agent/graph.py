@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import time
+
 from langgraph.graph import END, START, StateGraph
 
 from agentic_rag.config import Settings
 from agentic_rag.llm.client import OpenAILLMClient
 from agentic_rag.retrieval.service import RetrievalService
 from agentic_rag.retrieval.types import RetrievalVariant
-from agentic_rag.storage.repositories import SemanticMemoryRepository
+from agentic_rag.storage.repositories import (
+    ConversationRepository,
+    EpisodeRepository,
+    SemanticMemoryRepository,
+)
 from agentic_rag.storage.sqlite import SQLiteStore
 from agentic_rag.tools.arxiv_tools import ArxivToolset
 from agentic_rag.traces.writer import TraceWriter
@@ -21,7 +27,11 @@ class AskGraphRunner:
         store = SQLiteStore(settings.app_db_path)
         deps = AgentDependencies(
             retrieval_service=RetrievalService(settings=settings),
-            memory_service=MemoryService(SemanticMemoryRepository(store)),
+            memory_service=MemoryService(
+                semantic_repo=SemanticMemoryRepository(store),
+                conversation_repo=ConversationRepository(store),
+                episode_repo=EpisodeRepository(store),
+            ),
             toolset=ArxivToolset(settings=settings),
             trace_writer=TraceWriter(store),
             llm_client=OpenAILLMClient(settings=settings),
@@ -36,6 +46,7 @@ class AskGraphRunner:
         thread_id: str = "default",
         retrieval_variant: RetrievalVariant | None = None,
     ) -> AgentState:
+        started = time.monotonic()
         trace = self.trace_writer.start(thread_id=thread_id, run_mode="cli")
         initial_state: AgentState = {
             "thread_id": thread_id,
@@ -64,6 +75,47 @@ class AskGraphRunner:
                     "dependencies are unavailable."
                 ),
             }
+        if not final_state.get("episode_id"):
+            conversation_update = self.nodes.deps.memory_service.update_conversation_after_turn(
+                thread_id=thread_id,
+                turn_id=trace.turn_id,
+                user_query=query,
+                assistant_answer=final_state.get("final_answer", ""),
+                route_action=final_state.get("route_action", ""),
+                final_action=final_state.get("final_action", ""),
+            )
+            self.trace_writer.event(
+                trace_id=trace.trace_id,
+                level="info",
+                event="conversation.updated",
+                payload={
+                    "thread_id": thread_id,
+                    "active_focus": conversation_update.get("active_focus", ""),
+                },
+                node="graph.finalize",
+            )
+            episode_id = self.nodes.deps.memory_service.write_episode(
+                thread_id=thread_id,
+                turn_id=trace.turn_id,
+                user_query=query,
+                route_action=final_state.get("route_action", ""),
+                route_confidence=final_state.get("route_confidence"),
+                retrieved_child_ids=final_state.get("retrieved_child_ids", []),
+                selected_parent_ids=final_state.get("selected_parent_ids", []),
+                tool_calls=final_state.get("tool_calls", []),
+                final_action=final_state.get("final_action", ""),
+                final_answer_summary=str(final_state.get("final_answer", ""))[:280],
+            )
+            final_state["episode_id"] = episode_id
+            self.trace_writer.event(
+                trace_id=trace.trace_id,
+                level="info",
+                event="episode.written",
+                payload={"episode_id": episode_id},
+                node="graph.finalize",
+            )
+        total_latency_ms = int((time.monotonic() - started) * 1000)
+        final_state["total_latency_ms"] = total_latency_ms
         self.trace_writer.complete(
             trace_id=trace.trace_id, final_action=final_state.get("final_action", "")
         )

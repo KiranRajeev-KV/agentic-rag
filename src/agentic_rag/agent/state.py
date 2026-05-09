@@ -51,6 +51,25 @@ class AgentState(TypedDict, total=False):
     citations: list[str]
     sources_block: str
 
+    # Memory layers
+    conversation_summary: str
+    recent_turns: list[dict[str, Any]]
+    episodic_context: list[dict[str, Any]]
     memory_context: list[dict[str, Any]]
     memory_writes_pending: list[dict[str, Any]]
+    active_focus: str
+    active_paper_ids: list[str]
+    active_arxiv_ids: list[str]
+
+    semantic_memory_read_count: int
+    conversation_memory_read_count: int
+    episodic_memory_read_count: int
+
     tool_result: dict[str, Any]
+    episode_id: str
+
+    # Debug/metrics
+    total_latency_ms: int
+    retrieval_latency_ms: int
+    llm_latency_ms: int
+    tool_latency_ms: int
