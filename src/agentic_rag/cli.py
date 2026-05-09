@@ -45,12 +45,19 @@ def ingest_command(
             help="Optional convenience step: run `app index` behavior after SQLite ingestion.",
         ),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Re-download and re-parse papers even when cached parse artifacts are unchanged.",
+        ),
+    ] = False,
 ) -> None:
     settings = get_settings()
     initialize_storage(settings=settings, init_qdrant=False)
     typer.echo("ingest.start sqlite_only=true")
     pipeline = IngestPipeline(settings=settings)
-    summary = pipeline.run(limit=limit, days_back=days_back)
+    summary = pipeline.run(limit=limit, days_back=days_back, force=force)
     typer.echo(
         "ingest.summary "
         f"requested={summary.requested_limit} discovered={summary.discovered} "
@@ -91,7 +98,9 @@ def index_command(
     ] = None,
     batch_size: Annotated[
         int,
-        typer.Option("--batch-size", min=1, help="Embedding batch size for BGEM3 dense encoding."),
+        typer.Option(
+            "--batch-size", min=1, help="Embedding batch size for OpenAI embedding calls."
+        ),
     ] = 32,
     force: Annotated[
         bool,
@@ -107,7 +116,7 @@ def index_command(
 
 @corpus_app.command("discover")
 def corpus_discover_command(
-    limit: Annotated[int, typer.Option("--limit", min=1, max=1000)] = 20,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 20,
     days_back: Annotated[int, typer.Option("--days-back", min=1, max=365)] = 90,
     query_filter: Annotated[str | None, typer.Option("--query-filter")] = None,
 ) -> None:
@@ -246,7 +255,7 @@ def db_reset_command(
 def _run_index(settings: Settings, limit: int, batch_size: int, force: bool) -> None:
     initialize_storage(settings=settings, init_qdrant=False)
     typer.echo(
-        "index.warning this may trigger a large BGE-M3 model download and heavy local compute. "
+        "index.warning this will call OpenAI embeddings and may incur API cost. "
         "Use --limit for smaller runs."
     )
     typer.echo(
@@ -262,7 +271,7 @@ def _run_index(settings: Settings, limit: int, batch_size: int, force: bool) -> 
     typer.echo(
         f"index.summary selected={summary.selected_chunks} indexed={summary.indexed_chunks} "
         f"model={summary.model_name} config_hash={summary.config_hash[:12]} "
-        f"device={summary.device} force={summary.force}"
+        f"dimensions={summary.dimensions} force={summary.force}"
     )
 
 

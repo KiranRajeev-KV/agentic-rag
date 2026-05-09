@@ -9,6 +9,9 @@ from typing import Any
 
 from docling_core.transforms.chunker import HybridChunker
 
+CHUNKER_NAME = "docling_hybrid_chunker"
+CHUNKER_CONFIG_HASH = "default"
+
 
 @dataclass(frozen=True)
 class ChunkingResult:
@@ -91,6 +94,14 @@ def build_parent_child_rows(paper_id: str, conversion: object) -> ChunkingResult
         )
 
     return ChunkingResult(parent_rows=parent_rows, chunk_rows=chunk_rows)
+
+
+def current_chunker_name() -> str:
+    return CHUNKER_NAME
+
+
+def current_chunker_config_hash() -> str:
+    return CHUNKER_CONFIG_HASH
 
 
 def _chunk_row_base(chunk: object, chunk_index: int) -> dict[str, Any]:

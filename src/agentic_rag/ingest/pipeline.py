@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
+from pathlib import Path
 from typing import Any
 
 from agentic_rag.config import Settings
 from agentic_rag.corpus.discovery import discover_relevant_papers
 from agentic_rag.corpus.download import download_pdf
-from agentic_rag.ingest.chunking import build_parent_child_rows
+from agentic_rag.ingest.chunking import (
+    build_parent_child_rows,
+    current_chunker_config_hash,
+    current_chunker_name,
+)
 from agentic_rag.ingest.parser import DoclingParser
 from agentic_rag.logging import write_jsonl_event
 from agentic_rag.storage.repositories import (
@@ -31,6 +39,14 @@ class IngestSummary:
     errors: list[str]
 
 
+@dataclass(frozen=True)
+class IngestConfig:
+    parser_name: str
+    parser_version: str
+    chunker_name: str
+    chunker_config_hash: str
+
+
 class IngestPipeline:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -42,8 +58,13 @@ class IngestPipeline:
         self.chunk_repo = ChunkRepository(self.store)
 
     def run(
-        self, limit: int, days_back: int = 90, query_filter: str | None = None
+        self,
+        limit: int,
+        days_back: int = 90,
+        query_filter: str | None = None,
+        force: bool = False,
     ) -> IngestSummary:
+        ingest_config = _current_ingest_config(parser_name=self.parser.parser_name)
         discovered, discovery_errors = discover_relevant_papers(
             toolset=self.tools,
             limit=limit,
@@ -62,7 +83,8 @@ class IngestPipeline:
         for idx, item in enumerate(discovered, start=1):
             paper = item.metadata
             paper_id = _paper_id(paper.arxiv_id)
-            existing_status = self.paper_repo.get_parse_status(paper_id)
+            existing_state = self.paper_repo.get_ingest_state(paper_id)
+            existing_status = existing_state["parse_status"] if existing_state else None
             _emit_ingest_progress(
                 settings=self.settings,
                 event="paper.start",
@@ -73,6 +95,26 @@ class IngestPipeline:
                 title=paper.title,
                 status=existing_status or "new",
             )
+            skip_reason = self._skip_reason(
+                paper=paper,
+                existing_state=existing_state,
+                ingest_config=ingest_config,
+                force=force,
+            )
+            if skip_reason is not None:
+                skipped += 1
+                _emit_ingest_progress(
+                    settings=self.settings,
+                    event="paper.skipped",
+                    idx=idx,
+                    total=total,
+                    paper_id=paper_id,
+                    arxiv_id=paper.arxiv_id,
+                    title=paper.title,
+                    status="skipped",
+                    reason=skip_reason,
+                )
+                continue
 
             download = download_pdf(
                 paper=paper,
@@ -152,7 +194,10 @@ class IngestPipeline:
                             source_query=item.source_query,
                             pdf_sha256=download.pdf_sha256,
                             parse_status="parse_failed",
-                            parser_name=self.parser.parser_name,
+                            parser_name=ingest_config.parser_name,
+                            parser_version=ingest_config.parser_version,
+                            chunker_name=ingest_config.chunker_name,
+                            chunker_config_hash=ingest_config.chunker_config_hash,
                         )
                     )
                 if parse_result.error:
@@ -193,14 +238,14 @@ class IngestPipeline:
                             source_query=item.source_query,
                             pdf_sha256=download.pdf_sha256,
                             parse_status="parse_empty",
-                            parser_name=self.parser.parser_name,
-                            chunker_name="docling_hybrid_chunker",
+                            parser_name=ingest_config.parser_name,
+                            parser_version=ingest_config.parser_version,
+                            chunker_name=ingest_config.chunker_name,
+                            chunker_config_hash=ingest_config.chunker_config_hash,
                         )
                     )
                 continue
 
-            self.parent_repo.insert_many(chunked.parent_rows)
-            self.chunk_repo.insert_many(chunked.chunk_rows)
             self.paper_repo.upsert(
                 PaperRecord(
                     paper_id=paper_id,
@@ -220,11 +265,16 @@ class IngestPipeline:
                     source_query=item.source_query,
                     pdf_sha256=download.pdf_sha256,
                     parse_status="parsed",
-                    parser_name=self.parser.parser_name,
-                    chunker_name="docling_hybrid_chunker",
-                    chunker_config_hash="default",
+                    parser_name=ingest_config.parser_name,
+                    parser_version=ingest_config.parser_version,
+                    chunker_name=ingest_config.chunker_name,
+                    chunker_config_hash=ingest_config.chunker_config_hash,
                 )
             )
+            self.chunk_repo.delete_for_paper(paper_id)
+            self.parent_repo.delete_for_paper(paper_id)
+            self.parent_repo.insert_many(chunked.parent_rows)
+            self.chunk_repo.insert_many(chunked.chunk_rows)
             _emit_ingest_progress(
                 settings=self.settings,
                 event="paper.parsed",
@@ -248,6 +298,47 @@ class IngestPipeline:
             errors=errors,
         )
 
+    def _skip_reason(
+        self,
+        *,
+        paper: Any,
+        existing_state: dict[str, Any] | None,
+        ingest_config: IngestConfig,
+        force: bool,
+    ) -> str | None:
+        if force or not existing_state:
+            return None
+        if str(existing_state.get("parse_status") or "") != "parsed":
+            return None
+        if str(existing_state.get("arxiv_version") or "") != str(paper.version or ""):
+            return None
+        if str(existing_state.get("parser_name") or "") != ingest_config.parser_name:
+            return None
+        if str(existing_state.get("parser_version") or "") != ingest_config.parser_version:
+            return None
+        if str(existing_state.get("chunker_name") or "") != ingest_config.chunker_name:
+            return None
+        if (
+            str(existing_state.get("chunker_config_hash") or "")
+            != ingest_config.chunker_config_hash
+        ):
+            return None
+        stored_pdf_sha = str(existing_state.get("pdf_sha256") or "")
+        if not stored_pdf_sha:
+            return None
+
+        cached_pdf_path = _cached_pdf_path(
+            pdf_dir=self.settings.app_pdf_dir,
+            arxiv_id=paper.arxiv_id,
+            version=paper.version,
+        )
+        if not cached_pdf_path.exists():
+            return None
+        local_sha = _sha256_file(cached_pdf_path)
+        if local_sha != stored_pdf_sha:
+            return None
+        return "already_parsed_unchanged"
+
 
 def _paper_id(arxiv_id: str) -> str:
     normalized = arxiv_id.strip().lower()
@@ -260,6 +351,31 @@ def _iso(value: Any) -> str | None:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
+
+
+def _current_ingest_config(parser_name: str) -> IngestConfig:
+    return IngestConfig(
+        parser_name=parser_name,
+        parser_version=_parser_version(),
+        chunker_name=current_chunker_name(),
+        chunker_config_hash=current_chunker_config_hash(),
+    )
+
+
+def _parser_version() -> str:
+    try:
+        return package_version("docling")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _cached_pdf_path(pdf_dir: Path, arxiv_id: str, version: str | None) -> Path:
+    file_name = f"{arxiv_id}{version or ''}.pdf".replace("/", "_")
+    return pdf_dir / file_name
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _emit_ingest_warning(
@@ -308,6 +424,7 @@ def _emit_ingest_progress(
     arxiv_id: str,
     title: str,
     status: str,
+    reason: str | None = None,
 ) -> None:
     payload = {
         "idx": idx,
@@ -316,6 +433,7 @@ def _emit_ingest_progress(
         "arxiv_id": arxiv_id,
         "title": title,
         "status": status,
+        "reason": reason,
     }
     write_jsonl_event(
         settings.app_log_jsonl,
@@ -328,5 +446,5 @@ def _emit_ingest_progress(
     print(
         "ingest.info "
         f"event={event} idx={idx}/{total} arxiv_id={arxiv_id} "
-        f"paper_id={paper_id} status={status}"
+        f"paper_id={paper_id} status={status} reason={reason or '-'}"
     )

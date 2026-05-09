@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -116,6 +117,31 @@ class PaperRepository:
             return None
         return str(rows[0]["parse_status"])
 
+    def get_ingest_state(self, paper_id: str) -> dict[str, Any] | None:
+        rows = self.store.fetchall(
+            """
+            SELECT
+              paper_id,
+              arxiv_id,
+              arxiv_version,
+              updated_at,
+              parse_status,
+              pdf_sha256,
+              parser_name,
+              parser_version,
+              chunker_name,
+              chunker_config_hash,
+              ingested_at
+            FROM papers
+            WHERE paper_id = ?
+            LIMIT 1
+            """,
+            (paper_id,),
+        )
+        if not rows:
+            return None
+        return dict(rows[0])
+
     def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = self.store.fetchall(
             """
@@ -188,6 +214,9 @@ class ParentRepository:
             tuple(parent_ids),
         )
         return {str(row["parent_id"]): dict(row) for row in rows}
+
+    def delete_for_paper(self, paper_id: str) -> None:
+        self.store.execute("DELETE FROM parent_sections WHERE paper_id = ?", (paper_id,))
 
 
 class ChunkRepository:
@@ -339,6 +368,9 @@ class ChunkRepository:
         )
         return {str(row["chunk_id"]): dict(row) for row in rows}
 
+    def delete_for_paper(self, paper_id: str) -> None:
+        self.store.execute("DELETE FROM child_chunks WHERE paper_id = ?", (paper_id,))
+
     @staticmethod
     def _with_index_defaults(row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -470,3 +502,100 @@ class TraceRepository:
             "trace": dict(traces[0]),
             "events": [dict(row) for row in events],
         }
+
+    def add_retrieval_trace(
+        self,
+        *,
+        trace_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        self.store.execute(
+            """
+            INSERT INTO retrieval_traces (
+              retrieval_id, trace_id, top_child_score, top_parent_score, second_parent_score,
+              score_margin, supporting_child_count, distinct_parent_count, distinct_paper_count,
+              section_type_distribution, confidence_band, evidence_status, thresholds_used,
+              final_evidence_action, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"ret_{uuid.uuid4().hex[:12]}",
+                trace_id,
+                payload.get("top_child_score"),
+                payload.get("top_parent_score"),
+                payload.get("second_parent_score"),
+                payload.get("score_margin"),
+                payload.get("supporting_child_count"),
+                payload.get("distinct_parent_count"),
+                payload.get("distinct_paper_count"),
+                json.dumps(payload.get("section_type_distribution", {}), ensure_ascii=True),
+                payload.get("confidence_band"),
+                payload.get("evidence_status"),
+                json.dumps(payload.get("thresholds_used", {}), ensure_ascii=True),
+                payload.get("final_evidence_action"),
+                _utc_now(),
+            ),
+        )
+
+    def add_tool_trace(self, *, trace_id: str, payload: dict[str, Any]) -> None:
+        self.store.execute(
+            """
+            INSERT INTO tool_traces (
+              tool_call_id, trace_id, tool_name, tool_args_json, tool_started_at,
+              tool_finished_at, tool_status, tool_latency_ms, tool_result_summary,
+              tool_error, tool_result_ref
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.get("tool_call_id") or f"tool_{uuid.uuid4().hex[:12]}",
+                trace_id,
+                payload.get("tool_name", ""),
+                json.dumps(payload.get("tool_args", {}), ensure_ascii=True),
+                payload.get("tool_started_at") or _utc_now(),
+                payload.get("tool_finished_at") or _utc_now(),
+                payload.get("tool_status", "ok"),
+                payload.get("tool_latency_ms"),
+                payload.get("tool_result_summary", ""),
+                payload.get("tool_error"),
+                payload.get("tool_result_ref"),
+            ),
+        )
+
+    def add_evidence_trace(self, *, trace_id: str, payload: dict[str, Any]) -> None:
+        self.store.execute(
+            """
+            INSERT INTO evidence_traces (
+              evidence_id, trace_id, evidence_status, confidence_band,
+              missing_info, contradiction_notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"ev_{uuid.uuid4().hex[:12]}",
+                trace_id,
+                payload.get("evidence_status", "INSUFFICIENT"),
+                payload.get("confidence_band", "LOW"),
+                payload.get("missing_info", ""),
+                payload.get("contradiction_notes", ""),
+                _utc_now(),
+            ),
+        )
+
+    def add_answer_trace(self, *, trace_id: str, payload: dict[str, Any]) -> None:
+        self.store.execute(
+            """
+            INSERT INTO answer_traces (
+              answer_id, trace_id, final_action, citation_ids, refusal_reason,
+              clarifying_question, answer_text, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"ans_{uuid.uuid4().hex[:12]}",
+                trace_id,
+                payload.get("final_action", ""),
+                json.dumps(payload.get("citation_ids", []), ensure_ascii=True),
+                payload.get("refusal_reason"),
+                payload.get("clarifying_question"),
+                payload.get("answer_text"),
+                _utc_now(),
+            ),
+        )
