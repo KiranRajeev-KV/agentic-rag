@@ -9,15 +9,19 @@ from agentic_rag.config import get_settings
 from agentic_rag.storage.bootstrap import initialize_storage
 from agentic_rag.storage.repositories import TraceRepository
 from agentic_rag.storage.sqlite import SQLiteStore
+from agentic_rag.tools.arxiv_tools import ArxivToolset
+from agentic_rag.tools.schemas import ArxivGetRecentInput
 
 app = typer.Typer(help="Agentic RAG local-first CLI.")
 eval_app = typer.Typer(help="Run evaluation and ablation commands.")
 trace_app = typer.Typer(help="Inspect run traces.")
 db_app = typer.Typer(help="Database utility commands.")
+corpus_app = typer.Typer(help="Corpus discovery and ingestion helpers.")
 
 app.add_typer(eval_app, name="eval")
 app.add_typer(trace_app, name="trace")
 app.add_typer(db_app, name="db")
+app.add_typer(corpus_app, name="corpus")
 
 
 @app.callback()
@@ -40,6 +44,33 @@ def ask_command(
     typer.echo(f"[stub] ask requested: {question}")
     if debug:
         typer.echo("[stub] debug trace summary will be implemented in a later milestone.")
+
+
+@corpus_app.command("discover")
+def corpus_discover_command(
+    limit: Annotated[int, typer.Option("--limit", min=1, max=1000)] = 20,
+    days_back: Annotated[int, typer.Option("--days-back", min=1, max=365)] = 90,
+    query_filter: Annotated[str | None, typer.Option("--query-filter")] = None,
+) -> None:
+    settings = get_settings()
+    toolset = ArxivToolset(settings=settings)
+    payload = ArxivGetRecentInput(
+        category="cs.AI",
+        days_back=days_back,
+        max_results=limit,
+        query_filter=query_filter,
+    )
+    output = toolset.arxiv_get_recent(payload)
+    if output.status == "error":
+        typer.echo(f"arXiv discovery failed: {output.errors}")
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"discovered={len(output.papers)} status={output.status} source={output.source} "
+        f"days_back={days_back} limit={limit}"
+    )
+    for idx, paper in enumerate(output.papers[:5], start=1):
+        typer.echo(f"{idx}. {paper.arxiv_id} {paper.title}")
 
 
 @eval_app.command("run")
