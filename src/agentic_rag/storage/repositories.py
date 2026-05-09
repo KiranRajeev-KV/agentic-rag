@@ -102,6 +102,20 @@ class PaperRepository:
             ),
         )
 
+    def get_parse_status(self, paper_id: str) -> str | None:
+        rows = self.store.fetchall(
+            """
+            SELECT parse_status
+            FROM papers
+            WHERE paper_id = ?
+            LIMIT 1
+            """,
+            (paper_id,),
+        )
+        if not rows:
+            return None
+        return str(rows[0]["parse_status"])
+
     def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = self.store.fetchall(
             """

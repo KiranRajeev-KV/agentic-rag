@@ -57,30 +57,21 @@ class IngestPipeline:
         download_failed = 0
         skipped = 0
         errors = list(discovery_errors)
+        total = len(discovered)
 
-        for item in discovered:
+        for idx, item in enumerate(discovered, start=1):
             paper = item.metadata
             paper_id = _paper_id(paper.arxiv_id)
-
-            self.paper_repo.upsert(
-                PaperRecord(
-                    paper_id=paper_id,
-                    arxiv_id=paper.arxiv_id,
-                    arxiv_version=paper.version,
-                    title=paper.title,
-                    authors=paper.authors,
-                    abstract=paper.abstract or "",
-                    primary_category=paper.primary_category,
-                    categories=paper.categories,
-                    published_at=_iso(paper.published_at),
-                    updated_at=_iso(paper.updated_at),
-                    pdf_url=paper.pdf_url,
-                    abs_url=paper.abs_url,
-                    doi=paper.doi,
-                    comment=paper.comment,
-                    source_query=item.source_query,
-                    parse_status="discovered",
-                )
+            existing_status = self.paper_repo.get_parse_status(paper_id)
+            _emit_ingest_progress(
+                settings=self.settings,
+                event="paper.start",
+                idx=idx,
+                total=total,
+                paper_id=paper_id,
+                arxiv_id=paper.arxiv_id,
+                title=paper.title,
+                status=existing_status or "new",
             )
 
             download = download_pdf(
@@ -90,26 +81,38 @@ class IngestPipeline:
             )
             if not download.ok or not download.paper_path:
                 download_failed += 1
-                self.paper_repo.upsert(
-                    PaperRecord(
-                        paper_id=paper_id,
-                        arxiv_id=paper.arxiv_id,
-                        arxiv_version=paper.version,
-                        title=paper.title,
-                        authors=paper.authors,
-                        abstract=paper.abstract or "",
-                        primary_category=paper.primary_category,
-                        categories=paper.categories,
-                        published_at=_iso(paper.published_at),
-                        updated_at=_iso(paper.updated_at),
-                        pdf_url=paper.pdf_url,
-                        abs_url=paper.abs_url,
-                        doi=paper.doi,
-                        comment=paper.comment,
-                        source_query=item.source_query,
-                        parse_status="download_failed",
-                    )
+                _emit_ingest_warning(
+                    settings=self.settings,
+                    event="download.failed",
+                    idx=idx,
+                    total=total,
+                    paper_id=paper_id,
+                    arxiv_id=paper.arxiv_id,
+                    title=paper.title,
+                    status="download_failed",
+                    error=download.error,
                 )
+                if existing_status != "parsed":
+                    self.paper_repo.upsert(
+                        PaperRecord(
+                            paper_id=paper_id,
+                            arxiv_id=paper.arxiv_id,
+                            arxiv_version=paper.version,
+                            title=paper.title,
+                            authors=paper.authors,
+                            abstract=paper.abstract or "",
+                            primary_category=paper.primary_category,
+                            categories=paper.categories,
+                            published_at=_iso(paper.published_at),
+                            updated_at=_iso(paper.updated_at),
+                            pdf_url=paper.pdf_url,
+                            abs_url=paper.abs_url,
+                            doi=paper.doi,
+                            comment=paper.comment,
+                            source_query=item.source_query,
+                            parse_status="download_failed",
+                        )
+                    )
                 if download.error:
                     errors.append(f"{paper.arxiv_id}: {download.error}")
                 continue
@@ -118,41 +121,40 @@ class IngestPipeline:
             parse_result = self.parser.parse_pdf(download.paper_path)
             if not parse_result.ok or parse_result.conversion is None:
                 parse_failed += 1
-                write_jsonl_event(
-                    self.settings.app_log_jsonl,
-                    {
-                        "level": "warning",
-                        "event": "parse.failed",
-                        "payload": {
-                            "paper_id": paper_id,
-                            "arxiv_id": paper.arxiv_id,
-                            "status": parse_result.status,
-                            "error": parse_result.error,
-                        },
-                    },
+                _emit_ingest_warning(
+                    settings=self.settings,
+                    event="parse.failed",
+                    idx=idx,
+                    total=total,
+                    paper_id=paper_id,
+                    arxiv_id=paper.arxiv_id,
+                    title=paper.title,
+                    status=parse_result.status,
+                    error=parse_result.error,
                 )
-                self.paper_repo.upsert(
-                    PaperRecord(
-                        paper_id=paper_id,
-                        arxiv_id=paper.arxiv_id,
-                        arxiv_version=paper.version,
-                        title=paper.title,
-                        authors=paper.authors,
-                        abstract=paper.abstract or "",
-                        primary_category=paper.primary_category,
-                        categories=paper.categories,
-                        published_at=_iso(paper.published_at),
-                        updated_at=_iso(paper.updated_at),
-                        pdf_url=paper.pdf_url,
-                        abs_url=paper.abs_url,
-                        doi=paper.doi,
-                        comment=paper.comment,
-                        source_query=item.source_query,
-                        pdf_sha256=download.pdf_sha256,
-                        parse_status="parse_failed",
-                        parser_name=self.parser.parser_name,
+                if existing_status != "parsed":
+                    self.paper_repo.upsert(
+                        PaperRecord(
+                            paper_id=paper_id,
+                            arxiv_id=paper.arxiv_id,
+                            arxiv_version=paper.version,
+                            title=paper.title,
+                            authors=paper.authors,
+                            abstract=paper.abstract or "",
+                            primary_category=paper.primary_category,
+                            categories=paper.categories,
+                            published_at=_iso(paper.published_at),
+                            updated_at=_iso(paper.updated_at),
+                            pdf_url=paper.pdf_url,
+                            abs_url=paper.abs_url,
+                            doi=paper.doi,
+                            comment=paper.comment,
+                            source_query=item.source_query,
+                            pdf_sha256=download.pdf_sha256,
+                            parse_status="parse_failed",
+                            parser_name=self.parser.parser_name,
+                        )
                     )
-                )
                 if parse_result.error:
                     errors.append(f"{paper.arxiv_id}: {parse_result.error}")
                 continue
@@ -160,29 +162,41 @@ class IngestPipeline:
             chunked = build_parent_child_rows(paper_id=paper_id, conversion=parse_result.conversion)
             if not chunked.parent_rows or not chunked.chunk_rows:
                 skipped += 1
-                self.paper_repo.upsert(
-                    PaperRecord(
-                        paper_id=paper_id,
-                        arxiv_id=paper.arxiv_id,
-                        arxiv_version=paper.version,
-                        title=paper.title,
-                        authors=paper.authors,
-                        abstract=paper.abstract or "",
-                        primary_category=paper.primary_category,
-                        categories=paper.categories,
-                        published_at=_iso(paper.published_at),
-                        updated_at=_iso(paper.updated_at),
-                        pdf_url=paper.pdf_url,
-                        abs_url=paper.abs_url,
-                        doi=paper.doi,
-                        comment=paper.comment,
-                        source_query=item.source_query,
-                        pdf_sha256=download.pdf_sha256,
-                        parse_status="parse_empty",
-                        parser_name=self.parser.parser_name,
-                        chunker_name="docling_hybrid_chunker",
-                    )
+                _emit_ingest_warning(
+                    settings=self.settings,
+                    event="parse.empty",
+                    idx=idx,
+                    total=total,
+                    paper_id=paper_id,
+                    arxiv_id=paper.arxiv_id,
+                    title=paper.title,
+                    status="parse_empty",
+                    error="No parent/child rows produced by chunker",
                 )
+                if existing_status != "parsed":
+                    self.paper_repo.upsert(
+                        PaperRecord(
+                            paper_id=paper_id,
+                            arxiv_id=paper.arxiv_id,
+                            arxiv_version=paper.version,
+                            title=paper.title,
+                            authors=paper.authors,
+                            abstract=paper.abstract or "",
+                            primary_category=paper.primary_category,
+                            categories=paper.categories,
+                            published_at=_iso(paper.published_at),
+                            updated_at=_iso(paper.updated_at),
+                            pdf_url=paper.pdf_url,
+                            abs_url=paper.abs_url,
+                            doi=paper.doi,
+                            comment=paper.comment,
+                            source_query=item.source_query,
+                            pdf_sha256=download.pdf_sha256,
+                            parse_status="parse_empty",
+                            parser_name=self.parser.parser_name,
+                            chunker_name="docling_hybrid_chunker",
+                        )
+                    )
                 continue
 
             self.parent_repo.insert_many(chunked.parent_rows)
@@ -211,6 +225,16 @@ class IngestPipeline:
                     chunker_config_hash="default",
                 )
             )
+            _emit_ingest_progress(
+                settings=self.settings,
+                event="paper.parsed",
+                idx=idx,
+                total=total,
+                paper_id=paper_id,
+                arxiv_id=paper.arxiv_id,
+                title=paper.title,
+                status="parsed",
+            )
             parsed += 1
 
         return IngestSummary(
@@ -236,3 +260,73 @@ def _iso(value: Any) -> str | None:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
+
+
+def _emit_ingest_warning(
+    *,
+    settings: Settings,
+    event: str,
+    idx: int,
+    total: int,
+    paper_id: str,
+    arxiv_id: str,
+    title: str,
+    status: str,
+    error: str | None,
+) -> None:
+    payload = {
+        "idx": idx,
+        "total": total,
+        "paper_id": paper_id,
+        "arxiv_id": arxiv_id,
+        "title": title,
+        "status": status,
+        "error": error,
+    }
+    write_jsonl_event(
+        settings.app_log_jsonl,
+        {
+            "level": "warning",
+            "event": event,
+            "payload": payload,
+        },
+    )
+    print(
+        "ingest.warning "
+        f"event={event} idx={idx}/{total} arxiv_id={arxiv_id} "
+        f"paper_id={paper_id} status={status} error={error or '-'}"
+    )
+
+
+def _emit_ingest_progress(
+    *,
+    settings: Settings,
+    event: str,
+    idx: int,
+    total: int,
+    paper_id: str,
+    arxiv_id: str,
+    title: str,
+    status: str,
+) -> None:
+    payload = {
+        "idx": idx,
+        "total": total,
+        "paper_id": paper_id,
+        "arxiv_id": arxiv_id,
+        "title": title,
+        "status": status,
+    }
+    write_jsonl_event(
+        settings.app_log_jsonl,
+        {
+            "level": "info",
+            "event": event,
+            "payload": payload,
+        },
+    )
+    print(
+        "ingest.info "
+        f"event={event} idx={idx}/{total} arxiv_id={arxiv_id} "
+        f"paper_id={paper_id} status={status}"
+    )
