@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentic-rag"
+version = "0.1.0"
+description = "Local-first agentic RAG CLI over recent arXiv cs.AI papers."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "arxiv>=3.0.0",
+  "docling>=2.0.0",
+  "langgraph>=1.0.0",
+  "pydantic>=2.11.0",
+  "pydantic-settings>=2.8.0",
+  "qdrant-client>=1.15.0",
+  "typer>=0.16.0",
+]
+
+[project.scripts]
+app = "agentic_rag.cli:app"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.11.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

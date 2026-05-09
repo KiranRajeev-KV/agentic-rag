@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+.python-version
+
+# Environment and local config
+.env
+
+# Local data and runtime artifacts
+data/raw_pdfs/
+data/qdrant/
+data/*.sqlite
+data/*.db
+runs/logs/
+runs/traces/
+runs/reports/
+*.jsonl
+*.log
+*.trace
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
