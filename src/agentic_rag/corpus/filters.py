@@ -24,6 +24,19 @@ FILTER_TERMS: tuple[str, ...] = (
 
 
 def matched_filter_terms(title: str, abstract: str) -> list[str]:
-    haystack = f"{title}\n{abstract}".lower()
-    matches = [term for term in FILTER_TERMS if term in haystack]
-    return sorted(set(matches))
+    return matched_filter_details(title=title, abstract=abstract)["terms"]
+
+
+def matched_filter_details(title: str, abstract: str) -> dict[str, list[str]]:
+    lowered_title = title.lower()
+    lowered_abstract = abstract.lower()
+    terms = sorted(
+        {term for term in FILTER_TERMS if term in lowered_title or term in lowered_abstract}
+    )
+    title_terms = sorted({term for term in FILTER_TERMS if term in lowered_title})
+    abstract_terms = sorted({term for term in FILTER_TERMS if term in lowered_abstract})
+    return {
+        "terms": terms,
+        "title_terms": title_terms,
+        "abstract_terms": abstract_terms,
+    }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agentic_rag.corpus.filters import matched_filter_terms
+from agentic_rag.corpus.filters import matched_filter_details
 from agentic_rag.tools.schemas import ArxivGetRecentInput, ArxivPaperMetadata, ToolStatus
 
 
@@ -11,6 +11,8 @@ class DiscoveredPaper:
     metadata: ArxivPaperMetadata
     source_query: str
     filter_terms: list[str]
+    filter_reason: str
+    days_back: int
 
 
 def discover_relevant_papers(
@@ -33,15 +35,23 @@ def discover_relevant_papers(
     source_query = query_filter or "cs.AI recent papers"
     for paper in output.papers:
         abstract = paper.abstract or ""
-        matches = matched_filter_terms(title=paper.title, abstract=abstract)
-        if not matches:
+        details = matched_filter_details(title=paper.title, abstract=abstract)
+        if not details["terms"]:
             continue
         normalized_id = paper.arxiv_id.strip().lower()
         if normalized_id not in by_id:
+            reason = (
+                f"matched_terms={','.join(details['terms'])};"
+                f"title_terms={','.join(details['title_terms'])};"
+                f"abstract_terms={','.join(details['abstract_terms'])};"
+                f"query_filter={query_filter or ''}"
+            )
             by_id[normalized_id] = DiscoveredPaper(
                 metadata=paper,
                 source_query=source_query,
-                filter_terms=matches,
+                filter_terms=details["terms"],
+                filter_reason=reason,
+                days_back=days_back,
             )
 
     return list(by_id.values())[:limit], []

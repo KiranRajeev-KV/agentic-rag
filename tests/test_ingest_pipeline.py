@@ -32,7 +32,15 @@ def test_ingest_pipeline_parse_failure_path(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(
         "agentic_rag.ingest.pipeline.discover_relevant_papers",
         lambda **kwargs: (
-            [SimpleNamespace(metadata=paper, source_query="q", filter_terms=["agentic"])],
+            [
+                SimpleNamespace(
+                    metadata=paper,
+                    source_query="q",
+                    filter_terms=["agentic"],
+                    filter_reason="matched_terms=agentic",
+                    days_back=90,
+                )
+            ],
             [],
         ),
     )
@@ -114,7 +122,15 @@ def test_ingest_pipeline_skips_unchanged_parsed_paper(tmp_path: Path, monkeypatc
     monkeypatch.setattr(
         "agentic_rag.ingest.pipeline.discover_relevant_papers",
         lambda **kwargs: (
-            [SimpleNamespace(metadata=paper, source_query="q", filter_terms=["agentic"])],
+            [
+                SimpleNamespace(
+                    metadata=paper,
+                    source_query="q",
+                    filter_terms=["agentic"],
+                    filter_reason="matched_terms=agentic",
+                    days_back=90,
+                )
+            ],
             [],
         ),
     )
@@ -182,7 +198,15 @@ def test_ingest_pipeline_force_bypasses_skip(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr(
         "agentic_rag.ingest.pipeline.discover_relevant_papers",
         lambda **kwargs: (
-            [SimpleNamespace(metadata=paper, source_query="q", filter_terms=["agentic"])],
+            [
+                SimpleNamespace(
+                    metadata=paper,
+                    source_query="q",
+                    filter_terms=["agentic"],
+                    filter_reason="matched_terms=agentic",
+                    days_back=90,
+                )
+            ],
             [],
         ),
     )
@@ -262,3 +286,66 @@ def test_ingest_pipeline_force_bypasses_skip(tmp_path: Path, monkeypatch) -> Non
     assert summary.parsed == 1
     assert calls["downloaded"] == 1
     assert calls["parsed"] == 1
+
+
+def test_ingest_persists_discovery_filter_fields(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.sqlite"))
+    monkeypatch.setenv("APP_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("APP_PDF_DIR", str(tmp_path / "raw_pdfs"))
+    monkeypatch.setenv("APP_LOG_JSONL", str(tmp_path / "runs" / "logs" / "app.jsonl"))
+    get_settings.cache_clear()
+    settings = get_settings()
+    initialize_storage(settings=settings, init_qdrant=False)
+
+    paper = ArxivPaperMetadata(
+        arxiv_id="2501.40001",
+        version="v1",
+        title="Agentic systems",
+        authors=["A"],
+        abstract="retrieval and memory",
+        categories=["cs.AI"],
+        pdf_url="https://example.com/paper.pdf",
+    )
+    monkeypatch.setattr(
+        "agentic_rag.ingest.pipeline.discover_relevant_papers",
+        lambda **kwargs: (
+            [
+                SimpleNamespace(
+                    metadata=paper,
+                    source_query="cs.AI recent papers",
+                    filter_terms=["agentic", "memory"],
+                    filter_reason="matched_terms=agentic,memory;title_terms=agentic;abstract_terms=memory",
+                    days_back=90,
+                )
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        "agentic_rag.ingest.pipeline.download_pdf",
+        lambda **kwargs: SimpleNamespace(
+            ok=False, paper_path=None, pdf_sha256=None, error="mocked download fail"
+        ),
+    )
+    pipeline = IngestPipeline(settings=settings)
+    pipeline.run(limit=1, days_back=90)
+    rows = SQLiteStore(settings.app_db_path).fetchall(
+        """
+        SELECT
+          source_query,
+          discovery_source_query,
+          discovery_filter_terms,
+          discovery_filter_reason,
+          discovery_days_back
+        FROM papers
+        WHERE paper_id = ?
+        """,
+        ("paper_2501.40001",),
+    )
+    assert rows
+    row = dict(rows[0])
+    assert row["source_query"] == "cs.AI recent papers"
+    assert row["discovery_source_query"] == "cs.AI recent papers"
+    assert "agentic" in str(row["discovery_filter_terms"])
+    assert "matched_terms=" in str(row["discovery_filter_reason"])
+    assert int(row["discovery_days_back"]) == 90
