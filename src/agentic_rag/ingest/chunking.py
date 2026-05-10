@@ -133,7 +133,9 @@ def _chunk_row_base(chunk: object, chunk_index: int) -> dict[str, Any]:
 
 
 def _section_path(chunk: object) -> str:
-    headings = [h.strip() for h in getattr(chunk.meta, "headings", []) if h and h.strip()]
+    raw_headings = getattr(chunk.meta, "headings", None)
+    headings_src = raw_headings if isinstance(raw_headings, list) else []
+    headings = [h.strip() for h in headings_src if isinstance(h, str) and h.strip()]
     if not headings:
         return "__root__"
     return " > ".join(headings)
