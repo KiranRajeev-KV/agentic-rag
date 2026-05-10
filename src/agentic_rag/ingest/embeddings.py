@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from openai import OpenAI
@@ -27,12 +28,27 @@ class OpenAIEmbedder:
                 dimensions=self.settings.embedding_dimensions,
             )
         vectors: list[list[float]] = []
+        total_calls = (len(texts) + batch_size - 1) // batch_size
         for idx in range(0, len(texts), batch_size):
             chunk = texts[idx : idx + batch_size]
+            call_no = (idx // batch_size) + 1
+            print(
+                "index.embed.call_start "
+                f"call={call_no}/{total_calls} inputs={len(chunk)}",
+                flush=True,
+            )
+            started_at = time.perf_counter()
             response = self._client_or_raise().embeddings.create(
                 model=self.settings.embedding_model,
                 input=chunk,
                 dimensions=self.settings.embedding_dimensions,
+            )
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            print(
+                "index.embed.call_done "
+                f"call={call_no}/{total_calls} "
+                f"vectors={len(response.data)} latency_ms={latency_ms}",
+                flush=True,
             )
             vectors.extend([list(item.embedding) for item in response.data])
         return EmbeddingBatch(

@@ -28,6 +28,8 @@ class IndexSummary:
 
 
 class ChildChunkIndexer:
+    _QDRANT_UPSERT_POINTS_BATCH_SIZE = 512
+
     def __init__(self, settings: Settings, embedder: OpenAIEmbedder | None = None) -> None:
         self.settings = settings
         self.store = SQLiteStore(settings.app_db_path)
@@ -57,13 +59,34 @@ class ChildChunkIndexer:
                 config_hash=config_hash,
             )
         )
+        empty_pending_chunks = self._count_empty_pending_chunks(
+            model_name=self.settings.embedding_model,
+            config_hash=config_hash,
+            force=force,
+        )
         selected_chunks = 0
         indexed_chunks = 0
         skipped_as_up_to_date = total_chunks - pending_chunks
+        skipped_empty_chunks = 0
+        batch_no = 0
+
+        print(
+            "index.info "
+            f"pending_chunks={pending_chunks} empty_pending_chunks={empty_pending_chunks} "
+            "empty chunks will be skipped from embedding",
+            flush=True,
+        )
 
         while True:
+            fetch_limit: int | None = None
+            if limit is not None:
+                remaining_target = limit - selected_chunks
+                if remaining_target <= 0:
+                    break
+                fetch_limit = remaining_target
+
             rows = self.chunk_repo.fetch_chunks_for_indexing(
-                limit=limit,
+                limit=fetch_limit,
                 model_name=self.settings.embedding_model,
                 config_hash=config_hash,
                 force=force,
@@ -71,11 +94,41 @@ class ChildChunkIndexer:
             if not rows:
                 break
 
-            texts = [row["chunk_text"] for row in rows]
+            batch_no += 1
+            print(
+                "index.batch.start "
+                f"batch={batch_no} rows={len(rows)} "
+                f"selected_so_far={selected_chunks} indexed_so_far={indexed_chunks} "
+                f"limit={limit if limit is not None else 'all'}",
+                flush=True,
+            )
+            rows_to_embed = [row for row in rows if str(row.get("chunk_text") or "").strip()]
+            skipped_rows = [row for row in rows if not str(row.get("chunk_text") or "").strip()]
+
+            if skipped_rows:
+                skipped_empty_chunks += len(skipped_rows)
+                self.chunk_repo.mark_embedded(
+                    chunk_ids=[row["chunk_id"] for row in skipped_rows],
+                    model_name=self.settings.embedding_model,
+                    config_hash=config_hash,
+                )
+                print(
+                    "index.batch.skip "
+                    f"batch={batch_no} skipped_empty={len(skipped_rows)} "
+                    f"skipped_empty_total={skipped_empty_chunks}",
+                    flush=True,
+                )
+
+            if not rows_to_embed:
+                if force:
+                    break
+                continue
+
+            texts = [row["chunk_text"] for row in rows_to_embed]
             batch = self.embedder.encode(texts=texts, batch_size=batch_size)
 
             points: list[models.PointStruct] = []
-            for row, vector in zip(rows, batch.dense_vectors, strict=False):
+            for row, vector in zip(rows_to_embed, batch.dense_vectors, strict=False):
                 points.append(
                     models.PointStruct(
                         id=_point_uuid(row["chunk_id"]),
@@ -84,22 +137,44 @@ class ChildChunkIndexer:
                     )
                 )
 
-            client.upsert(
-                collection_name=self.settings.qdrant_collection,
-                points=points,
-                wait=True,
+            point_sub_batches = [
+                points[i : i + self._QDRANT_UPSERT_POINTS_BATCH_SIZE]
+                for i in range(0, len(points), self._QDRANT_UPSERT_POINTS_BATCH_SIZE)
+            ]
+            print(
+                "index.batch.upsert "
+                f"batch={batch_no} sub_batches={len(point_sub_batches)} "
+                f"points_per_batch={self._QDRANT_UPSERT_POINTS_BATCH_SIZE}",
+                flush=True,
             )
+            for sub_batch_idx, point_sub_batch in enumerate(point_sub_batches, start=1):
+                client.upsert(
+                    collection_name=self.settings.qdrant_collection,
+                    points=point_sub_batch,
+                    wait=True,
+                )
+                print(
+                    "index.batch.upsert_done "
+                    f"batch={batch_no} sub_batch={sub_batch_idx}/{len(point_sub_batches)} "
+                    f"points={len(point_sub_batch)}",
+                    flush=True,
+                )
             self.chunk_repo.mark_embedded(
-                chunk_ids=[row["chunk_id"] for row in rows],
+                chunk_ids=[row["chunk_id"] for row in rows_to_embed],
                 model_name=batch.model_name,
                 config_hash=config_hash,
             )
-            selected_chunks += len(rows)
+            selected_chunks += len(rows_to_embed)
             indexed_chunks += len(points)
+            remaining = max(pending_chunks - selected_chunks, 0)
+            print(
+                "index.batch.done "
+                f"batch={batch_no} indexed_batch={len(points)} "
+                f"indexed_total={indexed_chunks} remaining_estimate={remaining}",
+                flush=True,
+            )
 
             if force:
-                break
-            if limit is not None and selected_chunks >= limit:
                 break
 
         return IndexSummary(
@@ -113,6 +188,35 @@ class ChildChunkIndexer:
             config_hash=config_hash,
             dimensions=self.settings.embedding_dimensions,
         )
+
+    def _count_empty_pending_chunks(self, model_name: str, config_hash: str, force: bool) -> int:
+        if force:
+            row = self.store.fetchall(
+                """
+                SELECT COUNT(*) AS count
+                FROM child_chunks
+                WHERE TRIM(COALESCE(chunk_text, '')) = ''
+                """
+            )
+            return int(row[0]["count"]) if row else 0
+
+        row = self.store.fetchall(
+            """
+            SELECT COUNT(*) AS count
+            FROM child_chunks c
+            WHERE TRIM(COALESCE(c.chunk_text, '')) = ''
+              AND (
+                c.embedding_model IS NULL OR c.embedding_model = ''
+                OR c.embedding_model != ?
+                OR c.embedding_config_hash IS NULL OR c.embedding_config_hash = ''
+                OR c.embedding_config_hash != ?
+                OR c.indexed_embedding_text_hash IS NULL OR c.indexed_embedding_text_hash = ''
+                OR c.indexed_embedding_text_hash != c.embedding_text_hash
+              )
+            """,
+            (model_name, config_hash),
+        )
+        return int(row[0]["count"]) if row else 0
 
     def _embedding_config_hash(self) -> str:
         material = (
