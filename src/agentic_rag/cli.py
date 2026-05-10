@@ -13,8 +13,6 @@ from agentic_rag.ingest.pipeline import IngestPipeline
 from agentic_rag.retrieval.types import RetrievalVariant
 from agentic_rag.storage.bootstrap import initialize_storage
 from agentic_rag.storage.sqlite import SQLiteStore
-from agentic_rag.tools.arxiv_tools import ArxivToolset
-from agentic_rag.tools.schemas import ArxivGetRecentInput
 from agentic_rag.traces.reader import TraceReader
 
 app = typer.Typer(help="Agentic RAG local-first CLI.")
@@ -26,7 +24,6 @@ corpus_app = typer.Typer(help="Corpus discovery and ingestion helpers.")
 app.add_typer(eval_app, name="eval")
 app.add_typer(trace_app, name="trace")
 app.add_typer(db_app, name="db")
-app.add_typer(corpus_app, name="corpus")
 
 
 @app.callback()
@@ -36,8 +33,9 @@ def main() -> None:
 
 @app.command("ingest")
 def ingest_command(
-    limit: Annotated[int, typer.Option("--limit", min=1, help="Number of papers to ingest.")] = 20,
-    days_back: Annotated[int, typer.Option("--days-back", min=1, max=365)] = 90,
+    limit: Annotated[
+        int, typer.Option("--limit", min=1, help="Number of manifest papers to ingest.")
+    ] = 100,
     index: Annotated[
         bool,
         typer.Option(
@@ -57,7 +55,7 @@ def ingest_command(
     initialize_storage(settings=settings, init_qdrant=False)
     typer.echo("ingest.start sqlite_only=true")
     pipeline = IngestPipeline(settings=settings)
-    summary = pipeline.run(limit=limit, days_back=days_back, force=force)
+    summary = pipeline.run(limit=limit, force=force)
     typer.echo(
         "ingest.summary "
         f"requested={summary.requested_limit} discovered={summary.discovered} "
@@ -69,6 +67,8 @@ def ingest_command(
         typer.echo("ingest.errors:")
         for err in summary.errors[:10]:
             typer.echo(f"- {err}")
+    if summary.download_failed > 0 and summary.parsed == 0:
+        typer.echo("ingest.hint run `uv run python scripts/download_corpus_pdfs.py` then retry.")
 
     if index:
         typer.echo("ingest.index opt-in enabled: running indexing step.")
@@ -116,33 +116,6 @@ def index_command(
 ) -> None:
     settings = get_settings()
     _run_index(settings=settings, limit=limit, batch_size=batch_size, force=force)
-
-
-@corpus_app.command("discover")
-def corpus_discover_command(
-    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 20,
-    days_back: Annotated[int, typer.Option("--days-back", min=1, max=365)] = 90,
-    query_filter: Annotated[str | None, typer.Option("--query-filter")] = None,
-) -> None:
-    settings = get_settings()
-    toolset = ArxivToolset(settings=settings)
-    payload = ArxivGetRecentInput(
-        category="cs.AI",
-        days_back=days_back,
-        max_results=limit,
-        query_filter=query_filter,
-    )
-    output = toolset.arxiv_get_recent(payload)
-    if output.status == "error":
-        typer.echo(f"arXiv discovery failed: {output.errors}")
-        raise typer.Exit(code=1)
-
-    typer.echo(
-        f"discovered={len(output.papers)} status={output.status} source={output.source} "
-        f"days_back={days_back} limit={limit}"
-    )
-    for idx, paper in enumerate(output.papers[:5], start=1):
-        typer.echo(f"{idx}. {paper.arxiv_id} {paper.title}")
 
 
 @eval_app.command("run")

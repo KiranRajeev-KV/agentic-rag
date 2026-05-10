@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
@@ -8,8 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from agentic_rag.config import Settings
-from agentic_rag.corpus.discovery import discover_relevant_papers
-from agentic_rag.corpus.download import download_pdf
 from agentic_rag.ingest.chunking import (
     build_parent_child_rows,
     current_chunker_config_hash,
@@ -24,7 +23,7 @@ from agentic_rag.storage.repositories import (
     ParentRepository,
 )
 from agentic_rag.storage.sqlite import SQLiteStore
-from agentic_rag.tools.arxiv_tools import ArxivToolset
+from agentic_rag.tools.schemas import ArxivPaperMetadata
 
 
 @dataclass(frozen=True)
@@ -50,7 +49,6 @@ class IngestConfig:
 class IngestPipeline:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.tools = ArxivToolset(settings=settings)
         self.parser = DoclingParser()
         self.store = SQLiteStore(settings.app_db_path)
         self.paper_repo = PaperRepository(self.store)
@@ -60,28 +58,21 @@ class IngestPipeline:
     def run(
         self,
         limit: int,
-        days_back: int = 90,
-        query_filter: str | None = None,
         force: bool = False,
     ) -> IngestSummary:
         ingest_config = _current_ingest_config(parser_name=self.parser.parser_name)
-        discovered, discovery_errors = discover_relevant_papers(
-            toolset=self.tools,
-            limit=limit,
-            days_back=days_back,
-            query_filter=query_filter,
-        )
+        discovered = _load_manifest_papers(self.settings.app_corpus_manifest, limit=limit)
+        expected_sha_by_id = _manifest_sha_by_id(self.settings.app_corpus_manifest)
 
         downloaded = 0
         parsed = 0
         parse_failed = 0
         download_failed = 0
         skipped = 0
-        errors = list(discovery_errors)
+        errors: list[str] = []
         total = len(discovered)
 
-        for idx, item in enumerate(discovered, start=1):
-            paper = item.metadata
+        for idx, paper in enumerate(discovered, start=1):
             paper_id = _paper_id(paper.arxiv_id)
             existing_state = self.paper_repo.get_ingest_state(paper_id)
             existing_status = existing_state["parse_status"] if existing_state else None
@@ -95,8 +86,37 @@ class IngestPipeline:
                 title=paper.title,
                 status=existing_status or "new",
             )
+            local_pdf = _cached_pdf_path(
+                pdf_dir=self.settings.app_pdf_dir,
+                arxiv_id=paper.arxiv_id,
+                version=paper.version,
+            )
+            expected_sha = expected_sha_by_id.get(paper.arxiv_id, "")
+            local_err = _validate_local_pdf(
+                paper=paper,
+                local_pdf=local_pdf,
+                expected_sha=expected_sha,
+            )
+            if local_err is not None:
+                download_failed += 1
+                errors.append(local_err)
+                _emit_ingest_warning(
+                    settings=self.settings,
+                    event="pdf.missing_or_corrupt",
+                    idx=idx,
+                    total=total,
+                    paper_id=paper_id,
+                    arxiv_id=paper.arxiv_id,
+                    title=paper.title,
+                    status="download_failed",
+                    error=local_err,
+                )
+                continue
+            local_sha = _sha256_file(local_pdf)
+
             skip_reason = self._skip_reason(
                 paper=paper,
+                local_sha=local_sha,
                 existing_state=existing_state,
                 ingest_config=ingest_config,
                 force=force,
@@ -116,55 +136,8 @@ class IngestPipeline:
                 )
                 continue
 
-            download = download_pdf(
-                paper=paper,
-                pdf_dir=self.settings.app_pdf_dir,
-                user_agent=self.settings.arxiv_user_agent,
-            )
-            if not download.ok or not download.paper_path:
-                download_failed += 1
-                _emit_ingest_warning(
-                    settings=self.settings,
-                    event="download.failed",
-                    idx=idx,
-                    total=total,
-                    paper_id=paper_id,
-                    arxiv_id=paper.arxiv_id,
-                    title=paper.title,
-                    status="download_failed",
-                    error=download.error,
-                )
-                if existing_status != "parsed":
-                    self.paper_repo.upsert(
-                        PaperRecord(
-                            paper_id=paper_id,
-                            arxiv_id=paper.arxiv_id,
-                            arxiv_version=paper.version,
-                            title=paper.title,
-                            authors=paper.authors,
-                            abstract=paper.abstract or "",
-                            primary_category=paper.primary_category,
-                            categories=paper.categories,
-                            published_at=_iso(paper.published_at),
-                            updated_at=_iso(paper.updated_at),
-                            pdf_url=paper.pdf_url,
-                            abs_url=paper.abs_url,
-                            doi=paper.doi,
-                            comment=paper.comment,
-                            source_query=item.source_query,
-                            discovery_source_query=item.source_query,
-                            discovery_filter_terms=item.filter_terms,
-                            discovery_filter_reason=item.filter_reason,
-                            discovery_days_back=item.days_back,
-                            parse_status="download_failed",
-                        )
-                    )
-                if download.error:
-                    errors.append(f"{paper.arxiv_id}: {download.error}")
-                continue
-
             downloaded += 1
-            parse_result = self.parser.parse_pdf(download.paper_path)
+            parse_result = self.parser.parse_pdf(local_pdf)
             if not parse_result.ok or parse_result.conversion is None:
                 parse_failed += 1
                 _emit_ingest_warning(
@@ -180,32 +153,16 @@ class IngestPipeline:
                 )
                 if existing_status != "parsed":
                     self.paper_repo.upsert(
-                        PaperRecord(
+                        _paper_record(
+                            paper=paper,
                             paper_id=paper_id,
-                            arxiv_id=paper.arxiv_id,
-                            arxiv_version=paper.version,
-                            title=paper.title,
-                            authors=paper.authors,
-                            abstract=paper.abstract or "",
-                            primary_category=paper.primary_category,
-                            categories=paper.categories,
-                            published_at=_iso(paper.published_at),
-                            updated_at=_iso(paper.updated_at),
-                            pdf_url=paper.pdf_url,
-                            abs_url=paper.abs_url,
-                            doi=paper.doi,
-                            comment=paper.comment,
-                            source_query=item.source_query,
-                            discovery_source_query=item.source_query,
-                            discovery_filter_terms=item.filter_terms,
-                            discovery_filter_reason=item.filter_reason,
-                            discovery_days_back=item.days_back,
-                            pdf_sha256=download.pdf_sha256,
+                            source_query="corpus_manifest",
+                            filter_terms=[],
+                            filter_reason="manifest_locked",
+                            days_back=90,
+                            pdf_sha256=local_sha,
                             parse_status="parse_failed",
-                            parser_name=ingest_config.parser_name,
-                            parser_version=ingest_config.parser_version,
-                            chunker_name=ingest_config.chunker_name,
-                            chunker_config_hash=ingest_config.chunker_config_hash,
+                            ingest_config=ingest_config,
                         )
                     )
                 if parse_result.error:
@@ -228,63 +185,31 @@ class IngestPipeline:
                 )
                 if existing_status != "parsed":
                     self.paper_repo.upsert(
-                        PaperRecord(
+                        _paper_record(
+                            paper=paper,
                             paper_id=paper_id,
-                            arxiv_id=paper.arxiv_id,
-                            arxiv_version=paper.version,
-                            title=paper.title,
-                            authors=paper.authors,
-                            abstract=paper.abstract or "",
-                            primary_category=paper.primary_category,
-                            categories=paper.categories,
-                            published_at=_iso(paper.published_at),
-                            updated_at=_iso(paper.updated_at),
-                            pdf_url=paper.pdf_url,
-                            abs_url=paper.abs_url,
-                            doi=paper.doi,
-                            comment=paper.comment,
-                            source_query=item.source_query,
-                            discovery_source_query=item.source_query,
-                            discovery_filter_terms=item.filter_terms,
-                            discovery_filter_reason=item.filter_reason,
-                            discovery_days_back=item.days_back,
-                            pdf_sha256=download.pdf_sha256,
+                            source_query="corpus_manifest",
+                            filter_terms=[],
+                            filter_reason="manifest_locked",
+                            days_back=90,
+                            pdf_sha256=local_sha,
                             parse_status="parse_empty",
-                            parser_name=ingest_config.parser_name,
-                            parser_version=ingest_config.parser_version,
-                            chunker_name=ingest_config.chunker_name,
-                            chunker_config_hash=ingest_config.chunker_config_hash,
+                            ingest_config=ingest_config,
                         )
                     )
                 continue
 
             self.paper_repo.upsert(
-                PaperRecord(
+                _paper_record(
+                    paper=paper,
                     paper_id=paper_id,
-                    arxiv_id=paper.arxiv_id,
-                    arxiv_version=paper.version,
-                    title=paper.title,
-                    authors=paper.authors,
-                    abstract=paper.abstract or "",
-                    primary_category=paper.primary_category,
-                    categories=paper.categories,
-                    published_at=_iso(paper.published_at),
-                    updated_at=_iso(paper.updated_at),
-                    pdf_url=paper.pdf_url,
-                    abs_url=paper.abs_url,
-                    doi=paper.doi,
-                    comment=paper.comment,
-                    source_query=item.source_query,
-                    discovery_source_query=item.source_query,
-                    discovery_filter_terms=item.filter_terms,
-                    discovery_filter_reason=item.filter_reason,
-                    discovery_days_back=item.days_back,
-                    pdf_sha256=download.pdf_sha256,
+                    source_query="corpus_manifest",
+                    filter_terms=[],
+                    filter_reason="manifest_locked",
+                    days_back=90,
+                    pdf_sha256=local_sha,
                     parse_status="parsed",
-                    parser_name=ingest_config.parser_name,
-                    parser_version=ingest_config.parser_version,
-                    chunker_name=ingest_config.chunker_name,
-                    chunker_config_hash=ingest_config.chunker_config_hash,
+                    ingest_config=ingest_config,
                 )
             )
             self.chunk_repo.delete_for_paper(paper_id)
@@ -317,7 +242,8 @@ class IngestPipeline:
     def _skip_reason(
         self,
         *,
-        paper: Any,
+        paper: ArxivPaperMetadata,
+        local_sha: str,
         existing_state: dict[str, Any] | None,
         ingest_config: IngestConfig,
         force: bool,
@@ -342,18 +268,101 @@ class IngestPipeline:
         stored_pdf_sha = str(existing_state.get("pdf_sha256") or "")
         if not stored_pdf_sha:
             return None
-
-        cached_pdf_path = _cached_pdf_path(
-            pdf_dir=self.settings.app_pdf_dir,
-            arxiv_id=paper.arxiv_id,
-            version=paper.version,
-        )
-        if not cached_pdf_path.exists():
-            return None
-        local_sha = _sha256_file(cached_pdf_path)
         if local_sha != stored_pdf_sha:
             return None
         return "already_parsed_unchanged"
+
+
+def _paper_record(
+    *,
+    paper: ArxivPaperMetadata,
+    paper_id: str,
+    source_query: str,
+    filter_terms: list[str],
+    filter_reason: str,
+    days_back: int,
+    pdf_sha256: str,
+    parse_status: str,
+    ingest_config: IngestConfig,
+) -> PaperRecord:
+    return PaperRecord(
+        paper_id=paper_id,
+        arxiv_id=paper.arxiv_id,
+        arxiv_version=paper.version,
+        title=paper.title,
+        authors=paper.authors,
+        abstract=paper.abstract or "",
+        primary_category=paper.primary_category,
+        categories=paper.categories,
+        published_at=_iso(paper.published_at),
+        updated_at=_iso(paper.updated_at),
+        pdf_url=paper.pdf_url,
+        abs_url=paper.abs_url,
+        doi=paper.doi,
+        comment=paper.comment,
+        source_query=source_query,
+        discovery_source_query=source_query,
+        discovery_filter_terms=filter_terms,
+        discovery_filter_reason=filter_reason,
+        discovery_days_back=days_back,
+        pdf_sha256=pdf_sha256,
+        parse_status=parse_status,
+        parser_name=ingest_config.parser_name,
+        parser_version=ingest_config.parser_version,
+        chunker_name=ingest_config.chunker_name,
+        chunker_config_hash=ingest_config.chunker_config_hash,
+    )
+
+
+def _load_manifest_papers(manifest_path: Path, limit: int) -> list[ArxivPaperMetadata]:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    papers = payload.get("papers", [])
+    out: list[ArxivPaperMetadata] = []
+    for row in papers[:limit]:
+        out.append(
+            ArxivPaperMetadata(
+                arxiv_id=str(row.get("arxiv_id", "")),
+                version=row.get("arxiv_version"),
+                title=str(row.get("title", "")),
+                authors=list(row.get("authors") or []),
+                abstract=row.get("abstract"),
+                categories=list(row.get("categories") or []),
+                primary_category=row.get("primary_category"),
+                published_at=row.get("published_at"),
+                updated_at=row.get("updated_at"),
+                abs_url=row.get("abs_url"),
+                pdf_url=row.get("pdf_url"),
+                doi=row.get("doi"),
+                comment=row.get("comment"),
+            )
+        )
+    return out
+
+
+def _manifest_sha_by_id(manifest_path: Path) -> dict[str, str]:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    by_id: dict[str, str] = {}
+    for row in payload.get("papers", []):
+        arxiv_id = str(row.get("arxiv_id", "")).strip()
+        if arxiv_id:
+            by_id[arxiv_id] = str(row.get("pdf_sha256") or "")
+    return by_id
+
+
+def _validate_local_pdf(
+    *,
+    paper: ArxivPaperMetadata,
+    local_pdf: Path,
+    expected_sha: str,
+) -> str | None:
+    hint = "Run `uv run python scripts/download_corpus_pdfs.py`"
+    if not local_pdf.exists():
+        return f"{paper.arxiv_id}: missing pdf `{local_pdf}`. {hint}"
+    if expected_sha:
+        local_sha = _sha256_file(local_pdf)
+        if local_sha != expected_sha:
+            return f"{paper.arxiv_id}: sha mismatch for `{local_pdf}`. {hint}"
+    return None
 
 
 def _paper_id(arxiv_id: str) -> str:

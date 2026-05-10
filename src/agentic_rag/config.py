@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     app_db_path: Path = Field(default=Path("./data/app.sqlite"), alias="APP_DB_PATH")
     app_runs_dir: Path = Field(default=Path("./runs"), alias="APP_RUNS_DIR")
     app_pdf_dir: Path = Field(default=Path("./data/raw_pdfs"), alias="APP_PDF_DIR")
+    app_corpus_manifest: Path = Field(
+        default=Path("./corpus_manifest.json"), alias="APP_CORPUS_MANIFEST"
+    )
     app_log_jsonl: Path = Field(default=Path("./runs/logs/app.jsonl"), alias="APP_LOG_JSONL")
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_collection: str = Field(default="arxiv_child_chunks", alias="QDRANT_COLLECTION")

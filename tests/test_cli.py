@@ -7,7 +7,6 @@ import agentic_rag.cli as cli_module
 from agentic_rag.cli import app
 from agentic_rag.config import get_settings
 from agentic_rag.ingest.pipeline import IngestSummary
-from agentic_rag.tools.schemas import ArxivPaperMetadata, ArxivToolOutput, ToolStatus
 
 runner = CliRunner()
 
@@ -23,9 +22,8 @@ def test_ingest_with_mocked_pipeline(monkeypatch) -> None:
         def __init__(self, settings) -> None:  # noqa: ANN001
             self.settings = settings
 
-        def run(self, limit: int, days_back: int = 90, force: bool = False) -> IngestSummary:
+        def run(self, limit: int, force: bool = False) -> IngestSummary:
             assert limit == 20
-            assert days_back == 90
             assert force is False
             return IngestSummary(
                 requested_limit=20,
@@ -51,7 +49,7 @@ def test_ingest_with_optional_index(monkeypatch) -> None:
         def __init__(self, settings) -> None:  # noqa: ANN001
             self.settings = settings
 
-        def run(self, limit: int, days_back: int = 90, force: bool = False) -> IngestSummary:
+        def run(self, limit: int, force: bool = False) -> IngestSummary:
             assert force is False
             return IngestSummary(
                 requested_limit=limit,
@@ -86,9 +84,8 @@ def test_ingest_force_flag(monkeypatch) -> None:
         def __init__(self, settings) -> None:  # noqa: ANN001
             self.settings = settings
 
-        def run(self, limit: int, days_back: int = 90, force: bool = False) -> IngestSummary:
+        def run(self, limit: int, force: bool = False) -> IngestSummary:
             assert limit == 5
-            assert days_back == 90
             assert force is True
             return IngestSummary(
                 requested_limit=limit,
@@ -171,41 +168,6 @@ def test_ask_with_mocked_graph(monkeypatch) -> None:
     assert "Checkpoint enabled: True" in result.stdout
     assert "Memory read: conversation=1, semantic=2, episodic=1" in result.stdout
     assert "Latency ms: total=120, retrieval=45, llm=30, tool=0" in result.stdout
-
-
-def test_corpus_discover_with_mocked_tool(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "app.sqlite"))
-    monkeypatch.setenv("APP_RUNS_DIR", str(tmp_path / "runs"))
-    monkeypatch.setenv("APP_PDF_DIR", str(tmp_path / "raw_pdfs"))
-    monkeypatch.setenv("APP_LOG_JSONL", str(tmp_path / "runs" / "logs" / "app.jsonl"))
-    get_settings.cache_clear()
-
-    class _FakeToolset:
-        def __init__(self, settings) -> None:  # noqa: ANN001
-            self.settings = settings
-
-        def arxiv_get_recent(self, payload) -> ArxivToolOutput:  # noqa: ANN001
-            del payload
-            return ArxivToolOutput(
-                status=ToolStatus.ok,
-                source="arxiv_api",
-                papers=[
-                    ArxivPaperMetadata(
-                        arxiv_id="2501.00001",
-                        version="v1",
-                        title="Mock Paper",
-                        authors=["A. Author"],
-                        abstract="Summary",
-                        categories=["cs.AI"],
-                    )
-                ],
-            )
-
-    monkeypatch.setattr(cli_module, "ArxivToolset", _FakeToolset)
-
-    result = runner.invoke(app, ["corpus", "discover", "--limit", "20"])
-    assert result.exit_code == 0
-    assert "discovered=1 status=ok source=arxiv_api" in result.stdout
 
 
 def test_index_with_mocked_indexer(monkeypatch) -> None:
