@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
+
+from langgraph.graph import add_messages
 
 from agentic_rag.retrieval.types import EvidenceStatus, RetrievalVariant
 
@@ -21,6 +23,7 @@ class AgentState(TypedDict, total=False):
     raw_user_query: str
     normalized_query: str
 
+    messages: Annotated[list[Any], add_messages]
     route_action: RouteAction
     route_confidence: float
     route_reason_public: str
@@ -44,6 +47,7 @@ class AgentState(TypedDict, total=False):
     evidence_confidence: str
     evidence_signals: dict[str, Any]
     conflict_label: str
+    contradiction_action: str
     routing_mode: str
 
     final_action: str
@@ -60,6 +64,10 @@ class AgentState(TypedDict, total=False):
     active_focus: str
     active_paper_ids: list[str]
     active_arxiv_ids: list[str]
+    last_answer_summary: str
+    last_selected_parent_ids: list[str]
+    last_retrieved_child_ids: list[str]
+    last_tool_calls: list[dict[str, Any]]
 
     semantic_memory_read_count: int
     conversation_memory_read_count: int

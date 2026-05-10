@@ -74,34 +74,6 @@ CREATE TABLE IF NOT EXISTS child_chunks (
   FOREIGN KEY (paper_id) REFERENCES papers (paper_id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS conversation_threads (
-  thread_id TEXT PRIMARY KEY,
-  active_focus TEXT,
-  active_paper_ids TEXT,
-  active_arxiv_ids TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS conversation_turns (
-  turn_row_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  thread_id TEXT NOT NULL,
-  turn_id TEXT NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL,
-  route_action TEXT,
-  final_action TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (thread_id) REFERENCES conversation_threads (thread_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS conversation_summaries (
-  thread_id TEXT PRIMARY KEY,
-  summary TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (thread_id) REFERENCES conversation_threads (thread_id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS semantic_memories (
   memory_id TEXT PRIMARY KEY,
   namespace TEXT NOT NULL,
@@ -257,7 +229,6 @@ CREATE INDEX IF NOT EXISTS idx_papers_arxiv_id ON papers (arxiv_id);
 CREATE INDEX IF NOT EXISTS idx_parent_sections_paper_id ON parent_sections (paper_id);
 CREATE INDEX IF NOT EXISTS idx_child_chunks_parent_id ON child_chunks (parent_id);
 CREATE INDEX IF NOT EXISTS idx_child_chunks_paper_id ON child_chunks (paper_id);
-CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread_id ON conversation_turns (thread_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_episodes_thread_id ON episodes (thread_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trace_events_trace_id ON trace_events (trace_id);
 CREATE INDEX IF NOT EXISTS idx_tool_traces_trace_id ON tool_traces (trace_id);

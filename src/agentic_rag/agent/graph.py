@@ -1,18 +1,16 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from agentic_rag.config import Settings
 from agentic_rag.llm.client import OpenAILLMClient
 from agentic_rag.retrieval.service import RetrievalService
 from agentic_rag.retrieval.types import RetrievalVariant
-from agentic_rag.storage.repositories import (
-    ConversationRepository,
-    EpisodeRepository,
-    SemanticMemoryRepository,
-)
+from agentic_rag.storage.repositories import EpisodeRepository, SemanticMemoryRepository
 from agentic_rag.storage.sqlite import SQLiteStore
 from agentic_rag.tools.arxiv_tools import ArxivToolset
 from agentic_rag.traces.writer import TraceWriter
@@ -25,11 +23,13 @@ from .state import AgentState
 class AskGraphRunner:
     def __init__(self, settings: Settings) -> None:
         store = SQLiteStore(settings.app_db_path)
+        checkpoint_conn = sqlite3.connect(settings.app_db_path, check_same_thread=False)
+        self.checkpointer = SqliteSaver(checkpoint_conn)
+        self.checkpointer.setup()
         deps = AgentDependencies(
             retrieval_service=RetrievalService(settings=settings),
             memory_service=MemoryService(
                 semantic_repo=SemanticMemoryRepository(store),
-                conversation_repo=ConversationRepository(store),
                 episode_repo=EpisodeRepository(store),
             ),
             toolset=ArxivToolset(settings=settings),
@@ -54,11 +54,15 @@ class AskGraphRunner:
             "trace_id": trace.trace_id,
             "raw_user_query": query,
             "normalized_query": query.strip(),
+            "messages": [{"role": "user", "content": query}],
         }
         if retrieval_variant is not None:
             initial_state["forced_retrieval_variant"] = retrieval_variant
         try:
-            final_state = self.graph.invoke(initial_state)
+            final_state = self.graph.invoke(
+                initial_state,
+                config={"configurable": {"thread_id": thread_id}},
+            )
         except Exception as err:  # noqa: BLE001
             self.trace_writer.event(
                 trace_id=trace.trace_id,
@@ -76,24 +80,6 @@ class AskGraphRunner:
                 ),
             }
         if not final_state.get("episode_id"):
-            conversation_update = self.nodes.deps.memory_service.update_conversation_after_turn(
-                thread_id=thread_id,
-                turn_id=trace.turn_id,
-                user_query=query,
-                assistant_answer=final_state.get("final_answer", ""),
-                route_action=final_state.get("route_action", ""),
-                final_action=final_state.get("final_action", ""),
-            )
-            self.trace_writer.event(
-                trace_id=trace.trace_id,
-                level="info",
-                event="conversation.updated",
-                payload={
-                    "thread_id": thread_id,
-                    "active_focus": conversation_update.get("active_focus", ""),
-                },
-                node="graph.finalize",
-            )
             episode_id = self.nodes.deps.memory_service.write_episode(
                 thread_id=thread_id,
                 turn_id=trace.turn_id,
@@ -114,6 +100,13 @@ class AskGraphRunner:
                 payload={"episode_id": episode_id},
                 node="graph.finalize",
             )
+            self.trace_writer.event(
+                trace_id=trace.trace_id,
+                level="info",
+                event="checkpoint.persisted",
+                payload={"thread_id": thread_id},
+                node="graph.finalize",
+            )
         total_latency_ms = int((time.monotonic() - started) * 1000)
         final_state["total_latency_ms"] = total_latency_ms
         self.trace_writer.complete(
@@ -129,6 +122,7 @@ class AskGraphRunner:
         graph.add_node("retrieve", self.nodes.retrieve)
         graph.add_node("tool", self.nodes.tool)
         graph.add_node("evidence_check", self.nodes.evidence_check)
+        graph.add_node("contradiction_handler", self.nodes.contradiction_handler)
         graph.add_node("answer", self.nodes.answer)
         graph.add_node("refuse", self.nodes.refuse)
         graph.add_node("citation_validate", self.nodes.citation_validate)
@@ -152,13 +146,28 @@ class AskGraphRunner:
         graph.add_conditional_edges(
             "evidence_check",
             self.nodes.evidence_branch,
-            {"answer": "answer", "clarify": "clarify", "refuse": "refuse"},
+            {
+                "answer": "answer",
+                "clarify": "clarify",
+                "refuse": "refuse",
+                "contradiction_handler": "contradiction_handler",
+            },
+        )
+        graph.add_conditional_edges(
+            "contradiction_handler",
+            self.nodes.contradiction_branch,
+            {
+                "answer": "answer",
+                "clarify": "clarify",
+                "refuse": "refuse",
+                "tool": "tool",
+            },
         )
 
         graph.add_edge("answer", "citation_validate")
         graph.add_edge("tool", "citation_validate")
         graph.add_edge("citation_validate", "memory_update")
-        graph.add_edge("clarify", END)
-        graph.add_edge("refuse", END)
+        graph.add_edge("clarify", "memory_update")
+        graph.add_edge("refuse", "memory_update")
         graph.add_edge("memory_update", END)
-        return graph.compile()
+        return graph.compile(checkpointer=self.checkpointer)
