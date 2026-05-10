@@ -144,7 +144,12 @@ def test_ask_with_mocked_graph(monkeypatch) -> None:
                 "parent_scores": {"p1": 0.62},
                 "evidence_status": "SUFFICIENT",
                 "evidence_confidence": "MEDIUM",
+                "conflict_label": "NONE",
+                "contradiction_action": "",
                 "context_packets": [{"source_id": "S1"}],
+                "messages": [{"role": "user", "content": "What is agent memory?"}],
+                "conversation_summary": "sum",
+                "active_focus": "arxiv:2605.06641",
                 "conversation_memory_read_count": 1,
                 "semantic_memory_read_count": 2,
                 "episodic_memory_read_count": 1,
@@ -163,6 +168,7 @@ def test_ask_with_mocked_graph(monkeypatch) -> None:
     assert "Answer body [S1]" in result.stdout
     assert "Trace: tr_test" in result.stdout
     assert "Thread: demo" in result.stdout
+    assert "Checkpoint enabled: True" in result.stdout
     assert "Memory read: conversation=1, semantic=2, episodic=1" in result.stdout
     assert "Latency ms: total=120, retrieval=45, llm=30, tool=0" in result.stdout
 

@@ -9,7 +9,6 @@ class _FakeMemoryService:
     def __init__(self) -> None:
         self.writes = []
         self.episodes = []
-        self.conversation_updates = []
 
     def read_recent(self, limit: int = 10):  # noqa: ANN001, ARG002
         return []
@@ -17,30 +16,12 @@ class _FakeMemoryService:
     def read_semantic(self, limit: int = 10):  # noqa: ANN001, ARG002
         return []
 
-    def read_conversation(self, thread_id: str, limit: int = 6):  # noqa: ANN001, ARG002
-        return {
-            "summary": "",
-            "recent_turns": [],
-            "active_focus": "",
-            "active_paper_ids": [],
-            "active_arxiv_ids": [],
-        }
-
     def read_episodes(self, thread_id: str, limit: int = 6):  # noqa: ANN001, ARG002
         return []
 
     def write(self, **kwargs):  # noqa: ANN003
         self.writes.append(kwargs)
         return "mem_1"
-
-    def update_conversation_after_turn(self, **kwargs):  # noqa: ANN003
-        self.conversation_updates.append(kwargs)
-        return {
-            "summary": "s",
-            "active_focus": "a",
-            "active_paper_ids": [],
-            "active_arxiv_ids": [],
-        }
 
     def write_episode(self, **kwargs):  # noqa: ANN003
         self.episodes.append(kwargs)
@@ -101,6 +82,24 @@ def test_memory_update_skips_normal_qa() -> None:
     }
     nodes.memory_update(state)
     assert memory_service.writes == []
+
+
+def test_memory_update_persists_checkpoint_for_refuse_turn() -> None:
+    memory_service = _FakeMemoryService()
+    nodes = _build_nodes(memory_service)
+    state = {
+        "turn_id": "turn_1",
+        "thread_id": "demo",
+        "raw_user_query": "weather tomorrow?",
+        "final_action": "REFUSE",
+        "final_answer": "I can only answer from indexed corpus.",
+        "route_action": "REFUSE",
+        "messages": [{"role": "user", "content": "weather tomorrow?"}],
+    }
+    out = nodes.memory_update(state)
+    assert out["episode_id"] == "ep_1"
+    assert out["messages"][0]["role"] == "assistant"
+    assert memory_service.episodes
 
 
 def test_answer_fallback_strips_internal_ids() -> None:
@@ -318,6 +317,12 @@ def test_load_state_emits_memory_trace_events() -> None:
     out = nodes.load_state({"trace_id": "tr_1", "thread_id": "demo"})
     assert "conversation_summary" in out
     event_names = [event["event"] for event in events]
-    assert "memory.conversation_read" in event_names
+    assert "memory.checkpoint_read" in event_names
     assert "memory.semantic_read" in event_names
     assert "memory.episodic_read" in event_names
+
+
+def test_evidence_branch_routes_contradiction_handler() -> None:
+    nodes = _build_nodes(_FakeMemoryService())
+    branch = nodes.evidence_branch({"final_action": "CONTRADICTION_HANDLER"})
+    assert branch == "contradiction_handler"

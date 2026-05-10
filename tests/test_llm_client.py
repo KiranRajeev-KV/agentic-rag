@@ -61,6 +61,7 @@ def test_openai_llm_client_uses_responses_parse(tmp_path: Path, monkeypatch) -> 
     assert called["model"] == "gpt-5-nano"
     assert called["text_format"] is LLMRouterOutput
     assert "input" in called
+    assert called["store"] is False
 
 
 def test_openai_llm_client_raises_on_missing_output_parsed(tmp_path: Path, monkeypatch) -> None:

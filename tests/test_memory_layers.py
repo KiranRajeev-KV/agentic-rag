@@ -1,15 +1,44 @@
 from pathlib import Path
 
 from agentic_rag.agent.memory import MemoryService
+from agentic_rag.agent.nodes import AgentDependencies, AgentNodes
 from agentic_rag.agent.router import route_query_with_llm
 from agentic_rag.config import get_settings
 from agentic_rag.storage.bootstrap import initialize_storage
-from agentic_rag.storage.repositories import (
-    ConversationRepository,
-    EpisodeRepository,
-    SemanticMemoryRepository,
-)
+from agentic_rag.storage.repositories import EpisodeRepository, SemanticMemoryRepository
 from agentic_rag.storage.sqlite import SQLiteStore
+
+
+class _FakeTraceWriter:
+    def event(self, **kwargs):  # noqa: ANN003
+        del kwargs
+
+    def retrieval(self, **kwargs):  # noqa: ANN003
+        del kwargs
+
+    def tool(self, **kwargs):  # noqa: ANN003
+        del kwargs
+
+    def evidence(self, **kwargs):  # noqa: ANN003
+        del kwargs
+
+    def answer(self, **kwargs):  # noqa: ANN003
+        del kwargs
+
+
+class _FakeLLMClient:
+    settings = type(
+        "S",
+        (),
+        {
+            "router_model": "gpt-5-nano",
+            "answer_model": "gpt-5-nano",
+            "evidence_model": "gpt-5-nano",
+        },
+    )()
+
+    def enabled(self) -> bool:
+        return False
 
 
 def _init_settings(tmp_path: Path, monkeypatch):
@@ -27,28 +56,8 @@ def _memory_service(settings):
     store = SQLiteStore(settings.app_db_path)
     return MemoryService(
         semantic_repo=SemanticMemoryRepository(store),
-        conversation_repo=ConversationRepository(store),
         episode_repo=EpisodeRepository(store),
     )
-
-
-def test_conversation_memory_persistence(tmp_path: Path, monkeypatch) -> None:
-    settings = _init_settings(tmp_path, monkeypatch)
-    memory = _memory_service(settings)
-
-    memory.update_conversation_after_turn(
-        thread_id="demo",
-        turn_id="turn_1",
-        user_query="Tell me about arxiv:2605.06641",
-        assistant_answer="GlazyBench details [S1]",
-        route_action="RETRIEVE",
-        final_action="ANSWER_FROM_CONTEXT",
-    )
-
-    conv = memory.read_conversation(thread_id="demo", limit=6)
-    assert len(conv["recent_turns"]) == 2
-    assert conv["active_focus"].startswith("arxiv:")
-    assert conv["summary"]
 
 
 def test_episode_written_and_read(tmp_path: Path, monkeypatch) -> None:
@@ -85,3 +94,38 @@ def test_followup_query_uses_conversation_context() -> None:
     )
     assert mode == "fallback"
     assert decision.action == "RETRIEVE"
+
+
+def test_load_state_reads_checkpoint_fields_and_emits_counts(tmp_path: Path, monkeypatch) -> None:
+    settings = _init_settings(tmp_path, monkeypatch)
+    memory = _memory_service(settings)
+    nodes = AgentNodes(
+        AgentDependencies(
+            retrieval_service=object(),
+            memory_service=memory,
+            toolset=object(),
+            trace_writer=_FakeTraceWriter(),
+            llm_client=_FakeLLMClient(),
+        )
+    )
+    out = nodes.load_state(
+        {
+            "thread_id": "demo",
+            "messages": [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+            ],
+            "conversation_summary": "sum",
+            "active_focus": "arxiv:2605.06641",
+        }
+    )
+    assert out["conversation_summary"] == "sum"
+    assert out["conversation_memory_read_count"] == 2
+    assert out["active_focus"] == "arxiv:2605.06641"
+
+
+def test_schema_does_not_include_manual_conversation_tables() -> None:
+    schema = Path("src/agentic_rag/storage/schema.sql").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS conversation_threads" not in schema
+    assert "CREATE TABLE IF NOT EXISTS conversation_turns" not in schema
+    assert "CREATE TABLE IF NOT EXISTS conversation_summaries" not in schema
