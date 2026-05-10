@@ -291,6 +291,8 @@ def _print_debug_summary(state: dict[str, Any]) -> None:
     if hasattr(evidence_status, "value"):
         evidence_status = evidence_status.value
     evidence_confidence = state.get("evidence_confidence", "unknown")
+    conflict_label = state.get("conflict_label", "NONE")
+    contradiction_action = state.get("contradiction_action", "")
     retrieved_children = len(state.get("retrieved_child_ids", []))
     selected_parents = state.get("selected_parent_ids", [])
     parent_scores = state.get("parent_scores", {})
@@ -299,6 +301,10 @@ def _print_debug_summary(state: dict[str, Any]) -> None:
     conversation_count = state.get("conversation_memory_read_count", 0)
     semantic_count = state.get("semantic_memory_read_count", 0)
     episodic_count = state.get("episodic_memory_read_count", 0)
+    checkpoint_enabled = True
+    message_count = len(state.get("messages", []))
+    summary_len = len(state.get("conversation_summary", ""))
+    active_focus = state.get("active_focus", "")
     total_latency = state.get("total_latency_ms", 0)
     retrieval_latency = state.get("retrieval_latency_ms", 0)
     llm_latency = state.get("llm_latency_ms", 0)
@@ -307,6 +313,10 @@ def _print_debug_summary(state: dict[str, Any]) -> None:
         f"\nTrace: {trace_id}\n"
         f"Thread: {thread_id}\n"
         f"Turn: {turn_id}\n"
+        f"Checkpoint enabled: {checkpoint_enabled}\n"
+        f"Message count: {message_count}\n"
+        f"Conversation summary length: {summary_len}\n"
+        f"Active focus: {active_focus}\n"
         "Memory read: "
         f"conversation={conversation_count}, "
         f"semantic={semantic_count}, "
@@ -320,6 +330,8 @@ def _print_debug_summary(state: dict[str, Any]) -> None:
         f"Parent scores: {parent_scores}\n"
         f"Evidence status: {evidence_status}\n"
         f"Evidence confidence: {evidence_confidence}\n"
+        f"Conflict label: {conflict_label}\n"
+        f"Contradiction handler action: {contradiction_action or '(not used)'}\n"
         f"Context packets: {', '.join(context_packets) if context_packets else '(none)'}\n"
         f"Final action: {final_action}\n"
         "Latency ms: "
