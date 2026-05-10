@@ -112,7 +112,7 @@ class AgentNodes:
             recent_turns=state.get("recent_turns", []),
             episodic_context=state.get("episodic_context", []),
         )
-        llm_latency_ms = int((time.monotonic() - started) * 1000) if mode == "llm" else 0
+        llm_latency_ms = int((time.monotonic() - started) * 1000) if mode.startswith("llm") else 0
         self._trace(
             state,
             "router.completed",
@@ -121,8 +121,14 @@ class AgentNodes:
                 "confidence": decision.route_confidence,
                 "reason": decision.route_reason_public,
                 "routing_mode": mode,
-                "model": self.settings.router_model if mode == "llm" else "fallback",
-                "schema": "LLMRouterOutput" if mode == "llm" else "heuristic",
+                "model": self.settings.router_model if mode.startswith("llm") else "fallback",
+                "schema": (
+                    "LLMIntentOutput"
+                    if mode == "llm_intent"
+                    else "LLMRouterOutput"
+                    if mode == "llm"
+                    else "heuristic"
+                ),
                 "latency_ms": llm_latency_ms,
             },
             node="route_query",
@@ -144,7 +150,9 @@ class AgentNodes:
         }
 
     def clarify(self, state: AgentState) -> AgentState:
-        question = state.get("clarifying_question") or "Could you clarify what you want to compare?"
+        question = state.get("clarifying_question") or (
+            "Could you clarify the scope you want within the indexed corpus?"
+        )
         return {
             "final_action": "CLARIFY",
             "final_answer": question,
@@ -168,6 +176,9 @@ class AgentNodes:
             result = self.deps.retrieval_service.run(
                 query=state.get("rewritten_query", state["raw_user_query"]),
                 variant=variant,
+                retrieval_filters={
+                    str(k): str(v) for k, v in (state.get("retrieval_filters", {}) or {}).items()
+                },
             )
         except Exception as err:  # noqa: BLE001
             self._trace(
@@ -287,6 +298,7 @@ class AgentNodes:
                         "tool_args": payload.model_dump(mode="json"),
                         "tool_status": output.status.value,
                         "tool_result_summary": f"papers={len(output.papers)}",
+                        "tool_error": "; ".join(output.errors[:2]) if output.errors else "",
                     },
                 )
             lines = []
@@ -300,7 +312,13 @@ class AgentNodes:
                 )
             sources = [f"[T1] arXiv API arxiv_search query: {payload.query}"]
             tool_latency_ms = int((time.monotonic() - tool_started) * 1000)
-            if lines:
+            if output.status.value == "error":
+                detail = (
+                    "; ".join(output.errors[:2]) if output.errors else "unknown arXiv API error"
+                )
+                answer = f"arXiv search failed [T1]: {detail}"
+                citations = ["T1"]
+            elif lines:
                 answer = "Here are matching arXiv metadata results [T1]:\n\n" + "\n\n".join(lines)
                 for idx, paper in enumerate(output.papers[:5], start=2):
                     sources.append(f"[T{idx}] {paper.title}, arXiv:{paper.arxiv_id}")
@@ -474,6 +492,7 @@ class AgentNodes:
                 ),
                 "conflict_label": update.get("conflict_label", "NONE"),
                 "final_evidence_action": final_action,
+                "signals": state.get("evidence_signals", {}),
             },
             node="evidence_check",
         )

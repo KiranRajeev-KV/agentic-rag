@@ -10,15 +10,17 @@ def score_case(case: EvalCase, state: AgentState) -> EvalCaseResult:
     final_action = str(state.get("final_action", ""))
     answer = str(state.get("final_answer", ""))
     citations = _extract_citation_ids(answer)
+    trace_id = str(state.get("trace_id") or "") or None
+    thread_id = str(state.get("thread_id") or "") or None
 
     route_score = 2.0 if route == case.expected_route else 0.0
     answer_score = 2.0 if final_action == case.expected_final_action else 0.0
     evidence_score = 2.0 if _behavior_ok(case, final_action) else 0.0
     citation_score = 2.0 if _citation_ok(case, citations) else 0.0
-    retrieval_score = 1.0 if len(state.get("selected_parent_ids", [])) > 0 else 0.0
+    retrieval_score = _retrieval_score(case=case, state=state)
     tool_score = _tool_score(case=case, state=state)
-    memory_score = 0.5
-    trace_score = 0.5 if state.get("trace_id") else 0.0
+    memory_score = 0.0
+    trace_score = 0.0
 
     total = (
         route_score
@@ -38,6 +40,9 @@ def score_case(case: EvalCase, state: AgentState) -> EvalCaseResult:
 
     return EvalCaseResult(
         case_id=case.id,
+        intent=case.intent,
+        trace_id=trace_id,
+        thread_id=thread_id,
         score=total,
         route_score=route_score,
         retrieval_score=retrieval_score,
@@ -96,3 +101,12 @@ def _tool_score(case: EvalCase, state: AgentState) -> float:
     if tool_name == case.expected_tool and final_action == "ANSWER_FROM_TOOL":
         return 1.0
     return 0.0
+
+
+def _retrieval_score(case: EvalCase, state: AgentState) -> float:
+    route = str(state.get("route_action", ""))
+    if case.expected_route == "TOOL":
+        return 1.0 if route == "TOOL" else 0.0
+    if case.expected_route in {"CLARIFY", "REFUSE"}:
+        return 1.0
+    return 1.0 if len(state.get("selected_parent_ids", [])) > 0 else 0.0

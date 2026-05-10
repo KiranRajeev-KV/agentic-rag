@@ -14,6 +14,7 @@ __pycache__/
 # Local data and runtime artifacts
 data/raw_pdfs/
 data/qdrant/
+data/*.sqlite-*
 data/*.sqlite
 data/*.db
 runs/logs/
@@ -23,6 +24,7 @@ runs/reports/
 *.jsonl
 *.log
 *.trace
+*.bak
 
 # IDE / OS
 .idea/

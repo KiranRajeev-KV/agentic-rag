@@ -83,7 +83,7 @@ def _build_query(
     date_from: date | None,
     date_to: date | None,
 ) -> str:
-    cleaned = query.strip()
+    cleaned = _normalize_query_text(query)
     query_term = ""
     if cleaned and cleaned != "*":
         query_term = f"all:{cleaned}"
@@ -100,6 +100,21 @@ def _build_query(
     if not clauses:
         return "cat:cs.AI"
     return " AND ".join(clauses)
+
+
+def _normalize_query_text(query: str) -> str:
+    cleaned = " ".join(query.strip().split())
+    lowered = cleaned.lower()
+    noise_prefixes = (
+        "search arxiv for ",
+        "search for ",
+        "find papers on ",
+        "find papers about ",
+    )
+    for prefix in noise_prefixes:
+        if lowered.startswith(prefix):
+            return cleaned[len(prefix) :].strip()
+    return cleaned
 
 
 def _date_range_clause(date_from: date | None, date_to: date | None) -> str:

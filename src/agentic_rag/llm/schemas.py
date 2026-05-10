@@ -26,6 +26,20 @@ class LLMRouterOutput(BaseModel):
     retrieval_variant: Literal["child_only", "parent_child"] = "parent_child"
 
 
+class LLMIntentOutput(BaseModel):
+    intent: Literal[
+        "content_qa",
+        "comparison",
+        "follow_up",
+        "ambiguous",
+        "refusal",
+        "tool_arxiv",
+        "general",
+    ]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: str = ""
+
+
 class LLMEvidenceOutput(BaseModel):
     evidence_status: Literal["SUFFICIENT", "AMBIGUOUS", "INSUFFICIENT", "CONTRADICTORY"]
     conflict_label: Literal[

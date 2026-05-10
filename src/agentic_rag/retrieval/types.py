@@ -49,6 +49,7 @@ class RetrievalSignals:
     second_parent_score: float
     score_margin: float
     supporting_child_count: int
+    total_supporting_children: int
     distinct_parent_count: int
     distinct_paper_count: int
     section_type_distribution: dict[str, int]

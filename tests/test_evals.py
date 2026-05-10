@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agentic_rag.evals.runner import EvalRunner
+from agentic_rag.evals.runner import EvalRunner, _load_cases
 from agentic_rag.retrieval.types import RetrievalVariant
 
 
@@ -63,6 +63,7 @@ def test_eval_runner_variant_and_compare(tmp_path: Path, monkeypatch) -> None:
     parent = runner.run_variant(RetrievalVariant.parent_child)
     comparison = runner.compare(RetrievalVariant.child_only, RetrievalVariant.parent_child)
 
-    assert child["cases"] == 14
-    assert parent["cases"] == 14
+    expected_cases = len(_load_cases())
+    assert child["cases"] == expected_cases
+    assert parent["cases"] == expected_cases
     assert comparison["baseline"] == "child_only"

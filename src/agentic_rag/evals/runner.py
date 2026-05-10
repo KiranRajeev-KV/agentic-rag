@@ -32,16 +32,23 @@ class EvalRunner:
         refusal_misses = 0
         for case in cases:
             trace_writer = self.graph_runner.trace_writer
-            case_trace = trace_writer.start(thread_id=f"eval_{variant.value}", run_mode="eval")
+            case_thread_id = f"eval_{variant.value}_{case.id}"
+            case_trace = trace_writer.start(thread_id=case_thread_id, run_mode="eval")
             trace_writer.event(
                 trace_id=case_trace.trace_id,
                 level="info",
                 event="eval.case_started",
                 payload={"case_id": case.id, "variant": variant.value},
             )
+            for history_turn in case.conversation_history:
+                _ = self.graph_runner.run(
+                    history_turn,
+                    thread_id=case_thread_id,
+                    retrieval_variant=variant,
+                )
             state = self.graph_runner.run(
                 case.question,
-                thread_id=f"eval_{variant.value}",
+                thread_id=case_thread_id,
                 retrieval_variant=variant,
             )
             result = score_case(case, state)
@@ -79,6 +86,7 @@ class EvalRunner:
             "final_action_accuracy": _accuracy(
                 case_results, "expected_final_action", "actual_final_action"
             ),
+            "intent_metrics": _intent_metrics(case_results),
             "retrieval_metrics": _aggregate_retrieval_metrics(retrieval_metrics),
             "results": [item.model_dump(mode="json") for item in case_results],
         }
@@ -98,7 +106,7 @@ class EvalRunner:
         )
         self.graph_runner.trace_writer.complete(trace_id=eval_trace.trace_id, final_action="EVAL")
         self._write_reports(summary)
-        self._persist_eval(summary)
+        self._persist_eval(summary=summary, cases=cases, case_results=case_results)
         return summary
 
     def compare(self, baseline: RetrievalVariant, candidate: RetrievalVariant) -> dict[str, Any]:
@@ -150,7 +158,38 @@ class EvalRunner:
         ]
         (report_dir / "ablation_report.md").write_text("\n".join(lines), encoding="utf-8")
 
-    def _persist_eval(self, summary: dict[str, Any]) -> None:
+    def _persist_eval(
+        self,
+        *,
+        summary: dict[str, Any],
+        cases: list[EvalCase],
+        case_results: list,
+    ) -> None:  # noqa: ANN001
+        for case in cases:
+            self.store.execute(
+                """
+                INSERT OR REPLACE INTO eval_cases (
+                  case_id, question, conversation_history, expected_route, expected_final_action,
+                  expected_tool, expected_paper_ids, expected_parent_ids, expected_answer_points,
+                  should_cite_sources, should_refuse, should_clarify, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case.id,
+                    case.question,
+                    json.dumps(case.conversation_history, ensure_ascii=True),
+                    case.expected_route,
+                    case.expected_final_action,
+                    case.expected_tool,
+                    json.dumps(case.expected_paper_ids, ensure_ascii=True),
+                    json.dumps(case.expected_parent_ids, ensure_ascii=True),
+                    json.dumps(case.expected_answer_points, ensure_ascii=True),
+                    1 if case.should_cite_sources else 0,
+                    1 if case.should_refuse else 0,
+                    1 if case.should_clarify else 0,
+                    case.notes,
+                ),
+            )
         self.store.execute(
             """
             INSERT OR REPLACE INTO eval_runs (
@@ -167,6 +206,32 @@ class EvalRunner:
                 1 if summary["hard_fail_refusal"] else 0,
             ),
         )
+        for result in case_results:
+            score_id = f"score_{summary['eval_run_id']}_{result.case_id}"
+            self.store.execute(
+                """
+                INSERT OR REPLACE INTO eval_scores (
+                  score_id, eval_run_id, case_id, score, route_score, retrieval_score,
+                  evidence_score, answer_score, citation_score, memory_score, tool_score,
+                  trace_score, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    score_id,
+                    summary["eval_run_id"],
+                    result.case_id,
+                    result.score,
+                    result.route_score,
+                    result.retrieval_score,
+                    result.evidence_score,
+                    result.answer_score,
+                    result.citation_score,
+                    result.memory_score,
+                    result.tool_score,
+                    result.trace_score,
+                    result.notes,
+                ),
+            )
 
 
 def _load_cases() -> list[EvalCase]:
@@ -236,3 +301,24 @@ def _token_count_from_packets(context_packets: list[dict[str, Any]]) -> int:
         total += len(str(packet.get("section_context", "")).split())
         total += len(str(packet.get("highlighted_evidence", "")).split())
     return total
+
+
+def _intent_metrics(rows: list) -> dict[str, dict[str, float]]:  # noqa: ANN001
+    grouped: dict[str, list] = {}
+    for row in rows:
+        grouped.setdefault(getattr(row, "intent", "unknown"), []).append(row)
+    summary: dict[str, dict[str, float]] = {}
+    for intent, items in grouped.items():
+        n = len(items)
+        route_ok = sum(1 for item in items if item.expected_route == item.actual_route)
+        final_ok = sum(
+            1 for item in items if item.expected_final_action == item.actual_final_action
+        )
+        avg_score = mean(item.score for item in items) if items else 0.0
+        summary[intent] = {
+            "count": float(n),
+            "route_accuracy": (route_ok / n) if n else 0.0,
+            "final_action_accuracy": (final_ok / n) if n else 0.0,
+            "avg_score": avg_score,
+        }
+    return summary

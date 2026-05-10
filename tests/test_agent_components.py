@@ -37,7 +37,8 @@ def test_router_fallback_mode_when_llm_missing() -> None:
         router_model="gpt-5-nano",
         memory_context=[],
     )
-    assert mode == "fallback"
+    # With no LLM client, routing should still deterministically catch explicit tool intents.
+    assert mode in {"deterministic", "fallback"}
     assert decision.action == "TOOL"
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from qdrant_client.http import models
 
 from agentic_rag.config import Settings
@@ -20,15 +22,30 @@ class ChildRetriever:
         query: str,
         top_n: int = 30,
         include_references: bool = False,
+        metadata_filters: dict[str, str] | None = None,
     ) -> list[ChildHit]:
         query_embedding = self.embedder.encode([query], batch_size=1).dense_vectors[0]
-        response = self.client.query_points(
-            collection_name=self.settings.qdrant_collection,
-            query=query_embedding,
-            limit=top_n,
-            with_payload=True,
-            with_vectors=False,
-        )
+        query_filter = _metadata_filter(metadata_filters or {})
+        response = None
+        last_err: Exception | None = None
+        for attempt in range(1, 3):
+            try:
+                response = self.client.query_points(
+                    collection_name=self.settings.qdrant_collection,
+                    query=query_embedding,
+                    limit=top_n,
+                    with_payload=True,
+                    with_vectors=False,
+                    query_filter=query_filter,
+                )
+                break
+            except Exception as err:  # noqa: BLE001
+                last_err = err
+                if attempt == 2:
+                    raise
+                time.sleep(0.25)
+        if response is None and last_err is not None:
+            raise last_err
 
         hits: list[ChildHit] = []
         for point in response.points:
@@ -69,3 +86,19 @@ def references_filter(include_references: bool) -> models.Filter | None:
             )
         ]
     )
+
+
+def _metadata_filter(filters: dict[str, str]) -> models.Filter | None:
+    clauses: list[models.FieldCondition] = []
+    for key, value in filters.items():
+        if not value:
+            continue
+        clauses.append(
+            models.FieldCondition(
+                key=key,
+                match=models.MatchValue(value=value),
+            )
+        )
+    if not clauses:
+        return None
+    return models.Filter(must=clauses)

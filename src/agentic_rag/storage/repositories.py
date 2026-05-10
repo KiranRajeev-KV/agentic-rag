@@ -397,6 +397,32 @@ class ChunkRepository:
         )
         return {str(row["chunk_id"]): dict(row) for row in rows}
 
+    def lexical_search(self, query_terms: list[str], limit: int = 30) -> list[dict[str, Any]]:
+        clean_terms = [term.strip().lower() for term in query_terms if term and term.strip()]
+        if not clean_terms:
+            return []
+        where = " OR ".join("LOWER(c.chunk_text) LIKE ?" for _ in clean_terms)
+        params: list[Any] = [f"%{term}%" for term in clean_terms]
+        params.append(limit)
+        rows = self.store.fetchall(
+            f"""
+            SELECT
+              c.chunk_id,
+              c.parent_id,
+              c.paper_id,
+              c.section_path,
+              c.section_type,
+              c.content_type,
+              c.chunk_text
+            FROM child_chunks c
+            WHERE ({where})
+            ORDER BY c.token_count DESC, c.chunk_index ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        return [dict(row) for row in rows]
+
     def delete_for_paper(self, paper_id: str) -> None:
         self.store.execute("DELETE FROM child_chunks WHERE paper_id = ?", (paper_id,))
 

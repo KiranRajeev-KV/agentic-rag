@@ -1,88 +1,121 @@
-- id: c01_direct_memory
-  question: "What do recent papers say about agent memory?"
+- id: e01_memory_architecture
+  intent: content_qa
+  question: "How do recent papers distinguish memory storage from retrieval in LLM agent systems?"
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c02_direct_planning
-  question: "How do papers describe planning in agent workflows?"
+- id: e02_agent_retrieval_design
+  intent: content_qa
+  question: "What design patterns appear in agentic retrieval-augmented generation systems for enterprise or financial QA?"
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c03_direct_tool_use
-  question: "How is tool-use reliability measured in recent agent papers?"
+- id: e03_planning_long_horizon
+  intent: synthesis
+  question: "What techniques improve long-horizon reasoning and planning reliability in recent LLM agent papers?"
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c04_compare_arch
-  question: "Compare memory-centric and planning-centric agent designs."
+- id: e04_tool_use_safety
+  intent: content_qa
+  question: "How do papers evaluate runtime safety for tool-using agents?"
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c05_compare_eval
-  question: "What evaluation tradeoffs appear across these papers?"
+- id: e05_eval_without_ground_truth
+  intent: evaluation
+  question: "When ground-truth labels are unavailable, what evaluation strategies are proposed for LLM safety or agent assessment?"
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c06_method_specific
-  question: "What methods are used to reduce hallucinations in agentic RAG systems?"
+- id: e06_multi_agent_coordination
+  intent: comparison
+  question: "How do multi-agent systems coordinate under conflicting goals, and what optimization or communication mechanisms are used?"
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c07_limitation_specific
-  question: "What limitations do papers report for long-context agents?"
+- id: e07_failure_modes
+  intent: synthesis
+  question: "What recurring failure modes are reported for LLM agent workflows and reasoning systems?"
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c08_memory_followup
-  question: "Given our previous discussion, summarize the last answer focus."
+- id: e08_budget_resource_constraints
+  intent: content_qa
+  question: "How do recent works handle budget or resource constraints in agentic workflows?"
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c09_memory_followup_2
-  question: "Continue from the previous point and list key evidence."
+- id: e09_followup_summary
+  intent: follow_up
+  conversation_history:
+    - "Discuss memory and retrieval distinctions in agent systems."
+  question: "Continue from the previous point and summarize the strongest evidence."
   expected_route: "RETRIEVE"
   expected_final_action: "ANSWER_FROM_CONTEXT"
   should_cite_sources: true
 
-- id: c10_ambiguous_best
+- id: e10_followup_compare
+  intent: follow_up
+  conversation_history:
+    - "We discussed long-horizon reasoning methods."
+  question: "Now compare those methods with safety-focused control mechanisms."
+  expected_route: "RETRIEVE"
+  expected_final_action: "ANSWER_FROM_CONTEXT"
+  should_cite_sources: true
+
+- id: e11_ambiguous_better
+  intent: ambiguous
   question: "Which is better?"
   expected_route: "CLARIFY"
   expected_final_action: "CLARIFY"
   should_clarify: true
   should_cite_sources: false
 
-- id: c11_ambiguous_reference
+- id: e12_ambiguous_reference
+  intent: ambiguous
   question: "What about it?"
   expected_route: "CLARIFY"
   expected_final_action: "CLARIFY"
   should_clarify: true
   should_cite_sources: false
 
-- id: c12_refusal_out_of_domain
+- id: e13_refusal_out_of_scope
+  intent: refusal
   question: "What is the weather in Bangalore tomorrow?"
   expected_route: "REFUSE"
   expected_final_action: "REFUSE"
   should_refuse: true
   should_cite_sources: false
 
-- id: c13_refusal_missing_answer
-  question: "Give the exact 2027 benchmark results from papers not in this corpus."
+- id: e14_refusal_non_corpus_fact
+  intent: refusal
+  question: "Give exact 2027 benchmark numbers from papers outside this corpus."
   expected_route: "REFUSE"
   expected_final_action: "REFUSE"
   should_refuse: true
   should_cite_sources: false
 
-- id: c14_tool_metadata
+- id: e15_tool_search
+  intent: tool_arxiv
   question: "Search arXiv for recent papers on agent memory orchestration."
   expected_route: "TOOL"
   expected_final_action: "ANSWER_FROM_TOOL"
   expected_tool: "arxiv_search"
+  should_cite_sources: false
+
+- id: e16_tool_metadata_lookup
+  intent: tool_arxiv
+  question: "Find paper metadata for arXiv id 2605.05737."
+  expected_route: "TOOL"
+  expected_final_action: "ANSWER_FROM_TOOL"
+  expected_tool: "arxiv_lookup_by_id"
   should_cite_sources: false

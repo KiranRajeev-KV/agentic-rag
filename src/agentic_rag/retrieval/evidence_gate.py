@@ -11,9 +11,10 @@ def evaluate_evidence(
     thresholds: dict[str, float] | None = None,
 ) -> RetrievalSignals:
     params = {
-        "min_parent_score": 0.45,
-        "min_margin": 0.02,
-        "min_supporting_children": 2.0,
+        "min_parent_score": 0.42,
+        "min_margin": 0.01,
+        "min_supporting_children": 1.0,
+        "min_total_supporting_children": 3.0,
         "min_distinct_papers": 1.0,
     }
     if thresholds:
@@ -24,6 +25,7 @@ def evaluate_evidence(
     second_parent_score = parent_groups[1].parent_score if len(parent_groups) > 1 else 0.0
     score_margin = max(top_parent_score - second_parent_score, 0.0)
     supporting_child_count = len(parent_groups[0].evidence_child_ids) if parent_groups else 0
+    total_supporting_children = _total_supporting_children(parent_groups)
     distinct_parent_count = len(parent_groups)
     distinct_paper_count = len({group.paper_id for group in parent_groups})
     section_type_distribution = dict(Counter(group.section_type for group in parent_groups))
@@ -32,6 +34,7 @@ def evaluate_evidence(
         top_parent_score=top_parent_score,
         score_margin=score_margin,
         supporting_child_count=supporting_child_count,
+        total_supporting_children=total_supporting_children,
         distinct_paper_count=distinct_paper_count,
         thresholds=params,
     )
@@ -47,6 +50,7 @@ def evaluate_evidence(
         second_parent_score=second_parent_score,
         score_margin=score_margin,
         supporting_child_count=supporting_child_count,
+        total_supporting_children=total_supporting_children,
         distinct_parent_count=distinct_parent_count,
         distinct_paper_count=distinct_paper_count,
         section_type_distribution=section_type_distribution,
@@ -60,6 +64,7 @@ def _status_from_signals(
     top_parent_score: float,
     score_margin: float,
     supporting_child_count: int,
+    total_supporting_children: int,
     distinct_paper_count: int,
     thresholds: dict[str, float],
 ) -> EvidenceStatus:
@@ -69,7 +74,10 @@ def _status_from_signals(
         return EvidenceStatus.insufficient
     if supporting_child_count < thresholds["min_supporting_children"]:
         return EvidenceStatus.ambiguous
-    if score_margin < thresholds["min_margin"]:
+    if (
+        score_margin < thresholds["min_margin"]
+        and total_supporting_children < thresholds["min_total_supporting_children"]
+    ):
         return EvidenceStatus.ambiguous
     if distinct_paper_count < thresholds["min_distinct_papers"]:
         return EvidenceStatus.ambiguous
@@ -90,3 +98,9 @@ def _confidence_band(
     if evidence_status in {EvidenceStatus.sufficient, EvidenceStatus.ambiguous}:
         return "MEDIUM"
     return "LOW"
+
+
+def _total_supporting_children(parent_groups: list[ParentGroup]) -> int:
+    if not parent_groups:
+        return 0
+    return sum(len(group.evidence_child_ids) for group in parent_groups[:3])

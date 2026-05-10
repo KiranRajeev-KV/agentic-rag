@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -190,33 +191,36 @@ class ChildChunkIndexer:
         )
 
     def _count_empty_pending_chunks(self, model_name: str, config_hash: str, force: bool) -> int:
-        if force:
+        try:
+            if force:
+                row = self.store.fetchall(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM child_chunks
+                    WHERE TRIM(COALESCE(chunk_text, '')) = ''
+                    """
+                )
+                return int(row[0]["count"]) if row else 0
+
             row = self.store.fetchall(
                 """
                 SELECT COUNT(*) AS count
-                FROM child_chunks
-                WHERE TRIM(COALESCE(chunk_text, '')) = ''
-                """
+                FROM child_chunks c
+                WHERE TRIM(COALESCE(c.chunk_text, '')) = ''
+                  AND (
+                    c.embedding_model IS NULL OR c.embedding_model = ''
+                    OR c.embedding_model != ?
+                    OR c.embedding_config_hash IS NULL OR c.embedding_config_hash = ''
+                    OR c.embedding_config_hash != ?
+                    OR c.indexed_embedding_text_hash IS NULL OR c.indexed_embedding_text_hash = ''
+                    OR c.indexed_embedding_text_hash != c.embedding_text_hash
+                  )
+                """,
+                (model_name, config_hash),
             )
             return int(row[0]["count"]) if row else 0
-
-        row = self.store.fetchall(
-            """
-            SELECT COUNT(*) AS count
-            FROM child_chunks c
-            WHERE TRIM(COALESCE(c.chunk_text, '')) = ''
-              AND (
-                c.embedding_model IS NULL OR c.embedding_model = ''
-                OR c.embedding_model != ?
-                OR c.embedding_config_hash IS NULL OR c.embedding_config_hash = ''
-                OR c.embedding_config_hash != ?
-                OR c.indexed_embedding_text_hash IS NULL OR c.indexed_embedding_text_hash = ''
-                OR c.indexed_embedding_text_hash != c.embedding_text_hash
-              )
-            """,
-            (model_name, config_hash),
-        )
-        return int(row[0]["count"]) if row else 0
+        except sqlite3.OperationalError:
+            return 0
 
     def _embedding_config_hash(self) -> str:
         material = (

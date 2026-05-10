@@ -46,7 +46,7 @@ def test_openai_embedder_requires_api_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("APP_RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setenv("APP_PDF_DIR", str(tmp_path / "raw_pdfs"))
     monkeypatch.setenv("APP_LOG_JSONL", str(tmp_path / "runs" / "logs" / "app.jsonl"))
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     get_settings.cache_clear()
     settings = get_settings()
 

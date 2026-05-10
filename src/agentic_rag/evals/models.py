@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class EvalCase(BaseModel):
     id: str
+    intent: str = "content_qa"
     question: str
     conversation_history: list[str] = Field(default_factory=list)
     expected_route: str
@@ -21,6 +22,9 @@ class EvalCase(BaseModel):
 
 class EvalCaseResult(BaseModel):
     case_id: str
+    intent: str = "content_qa"
+    trace_id: str | None = None
+    thread_id: str | None = None
     score: float
     route_score: float
     retrieval_score: float

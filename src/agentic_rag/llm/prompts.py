@@ -10,6 +10,19 @@ Use REFUSE for out-of-domain questions.
 Use CLARIFY only when required ambiguity blocks grounded answering.
 """
 
+INTENT_SYSTEM_PROMPT = """You classify user query intent for a local arXiv corpus QA agent.
+Return JSON only.
+Allowed intents:
+- content_qa: direct question answerable from corpus content
+- comparison: asks to compare methods/findings/tradeoffs
+- follow_up: refers to prior turns/context
+- ambiguous: underspecified question requiring clarification
+- refusal: out-of-scope request
+- tool_arxiv: request for arXiv metadata/search/ID lookup
+- general: fallback when uncertain
+Set confidence between 0 and 1.
+"""
+
 EVIDENCE_SYSTEM_PROMPT = """You classify evidence quality for grounded QA
 from provided source packets.
 Return JSON only.
@@ -71,6 +84,21 @@ def router_user_prompt(
         f"{json.dumps(memory_context, ensure_ascii=True)}\n\n"
         "Recent episodic memory:\n"
         f"{json.dumps(episodic_context or [], ensure_ascii=True)}"
+    )
+
+
+def intent_user_prompt(
+    query: str,
+    conversation_summary: str = "",
+    recent_turns: list[dict[str, str]] | None = None,
+) -> str:
+    return (
+        "User query:\n"
+        f"{query}\n\n"
+        "Conversation summary:\n"
+        f"{conversation_summary}\n\n"
+        "Recent turns:\n"
+        f"{json.dumps(recent_turns or [], ensure_ascii=True)}"
     )
 
 
