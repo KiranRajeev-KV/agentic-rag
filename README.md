@@ -23,7 +23,8 @@ cp .env.example .env
 uv sync
 docker compose up -d qdrant
 uv run app db init
-uv run app ingest --limit 20
+uv run python scripts/download_corpus_pdfs.py
+uv run app ingest --limit 100
 uv run app index
 uv run app ask "What do recent papers say about agent memory?" --thread-id demo --debug
 uv run app --help
@@ -32,7 +33,8 @@ uv run app --help
 ## 4. Demo commands
 
 ```bash
-uv run app ingest --limit 20
+uv run python scripts/download_corpus_pdfs.py
+uv run app ingest --limit 100
 uv run app index
 uv run app ask "What do recent papers say about agent memory?" --thread-id demo --debug
 uv run app eval run --variant child_only
@@ -43,7 +45,7 @@ uv run app trace list --last 10
 
 ## 5. Architecture overview
 
-- Ingest: arXiv discovery/filtering -> PDF download -> Docling parse -> HybridChunker parent/child model in SQLite.
+- Ingest: locked `corpus_manifest.json` + local `data/raw_pdfs/` -> Docling parse -> HybridChunker parent/child model in SQLite.
 - Index: OpenAI `text-embedding-3-small` child embeddings (1536 dims) -> Qdrant upsert with compact payload.
 - Ask: LangGraph state graph with structured router (`gpt-5-nano`), retrieval/tool/clarify/refuse actions, evidence classification, citation checks, memory and trace writes.
 - Eval: 14 curated behavior-first cases and child-only vs parent-child ablation compare.
@@ -54,10 +56,10 @@ See `agentic_rag_implementation_context.md` and `docs/DECISIONS.md`.
 
 ## 7. Corpus and ingestion
 
-- Corpus scope: recent arXiv `cs.AI` with deterministic relevance filtering.
-- Command: `uv run app ingest --limit 20`
+- Corpus scope: locked manifest in `corpus_manifest.json` (100 papers by default).
+- Download missing/corrupt PDFs: `uv run python scripts/download_corpus_pdfs.py`
+- Ingest command: `uv run app ingest --limit 100`
 - Output: paper metadata, parent sections, child chunks, parse/chunk metadata in SQLite.
-- Persistence includes discovery metadata: source query, matched filter terms, and filter reason.
 
 ## 8. Retrieval strategy
 
