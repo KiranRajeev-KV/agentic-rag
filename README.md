@@ -9,7 +9,7 @@ Local-first CLI agentic RAG system over recent arXiv `cs.AI` papers, designed fo
 Can answer:
 - Questions grounded in indexed recent `cs.AI` papers.
 - Metadata/search requests via arXiv tool route.
-- Follow-ups inside a shared `--thread-id` using conversation + episodic memory.
+- Follow-ups inside a shared `--thread-id` using LangGraph SQLite checkpoints + episodic memory.
 
 Cannot answer:
 - General web knowledge outside indexed corpus.
@@ -69,7 +69,7 @@ See `agentic_rag_implementation_context.md` and `docs/DECISIONS.md`.
 
 - LangGraph nodes: load state, route, retrieve/tool, evidence check, answer/refuse/clarify, citation validation, memory update.
 - Three-layer memory:
-  - Conversation memory (`conversation_threads`, `conversation_turns`, `conversation_summaries`).
+  - Conversation memory (LangGraph SQLite checkpoint state scoped by `thread_id`).
   - Semantic decision memory (`semantic_memories`).
   - Episodic trace memory (`episodes`).
 - Thread scope: `uv run app ask "..." --thread-id demo`.

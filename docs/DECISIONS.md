@@ -11,6 +11,12 @@
 - Why: Enforces schema-adherent structured outputs instead of JSON mode.
 - Implementation details: `client.responses.parse(..., text_format=<PydanticModel>)` for router, evidence, answer, semantic-memory extraction, and LLM citation validation.
 - Known tradeoff: Provider/API coupling; deterministic fallbacks required when unavailable.
+- Conversation continuity is local-only: no `previous_response_id` and no OpenAI Conversations API.
+
+## LangGraph SQLite Checkpointer Dependency
+- Decision: Add `langgraph-checkpoint-sqlite` for durable thread-scoped checkpoints.
+- Why: Required for LangGraph-local conversation persistence without changing provider or adding hosted infra.
+- Implementation details: `SqliteSaver` stores checkpoints in the app SQLite DB; `app ask` passes `configurable.thread_id`.
 
 ## Citation Safety Policy
 - Decision: Deterministic validator is hard gate; LLM citation validator is semantic second gate.
@@ -19,13 +25,13 @@
 - Known tradeoff: Extra latency for LLM-enabled validation.
 
 ## Three-Layer Memory
-- Decision: Keep explicit SQLite-backed memory layers.
-- Why: Local-first transparency without extra persistence dependencies.
+- Decision: Conversation memory uses LangGraph SQLite checkpointing; semantic + episodic stay explicit SQLite tables.
+- Why: Thread-scoped follow-up state is best handled by LangGraph persistence while keeping durable decisions and reportable episodes queryable in app DB.
 - Implementation details:
-  - Conversation: `conversation_threads`, `conversation_turns`, `conversation_summaries`
-  - Semantic decisions: `semantic_memories`
-  - Episodic turns: `episodes`
-- Known tradeoff: More schema/repository complexity than in-memory-only state.
+  - Conversation: checkpointed `AgentState` (`messages`, summary/focus/active IDs) keyed by `thread_id`.
+  - Semantic decisions: `semantic_memories`.
+  - Episodic turns: `episodes`.
+- Known tradeoff: checkpoint tables can grow with thread length; thread ID consistency is required.
 
 ## Thread-Scoped Ask Behavior
 - Decision: Add `--thread-id` to ask flow (default `default`).

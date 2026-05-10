@@ -26,6 +26,7 @@ uv run app index --limit 500
 ```bash
 uv run app ask "What do recent papers say about agent memory?" --thread-id demo --debug
 uv run app ask "what about it" --thread-id demo --debug
+# Reuse same thread-id to read checkpointed conversation state
 ```
 
 ## Trace inspection

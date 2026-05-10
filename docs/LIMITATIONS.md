@@ -7,5 +7,6 @@
 - Evidence gate thresholds are calibrated on 14 curated cases, not a large benchmark.
 - Contradiction handling surfaces conflicts but does not adjudicate scientific truth.
 - No reranking, local embedding model, or hybrid sparse retrieval in v1.
-- Conversation memory is thread-scoped; follow-up quality depends on consistent `--thread-id` use.
+- Conversation memory is thread-scoped via LangGraph checkpoints; follow-up quality depends on consistent `--thread-id` use.
+- Checkpoint tables can grow for long-running threads; periodic local reset/cleanup may be needed.
 - This revision expects local runtime reset (SQLite/Qdrant) rather than backward-compatible DB migration.
