@@ -8,16 +8,19 @@ from agentic_rag.llm.client import OpenAILLMClient
 from agentic_rag.llm.prompts import (
     ANSWER_SYSTEM_PROMPT,
     CITATION_SYSTEM_PROMPT,
+    CONTRADICTION_SYSTEM_PROMPT,
     EVIDENCE_SYSTEM_PROMPT,
     MEMORY_SYSTEM_PROMPT,
     answer_user_prompt,
     citation_user_prompt,
+    contradiction_user_prompt,
     evidence_user_prompt,
     memory_user_prompt,
 )
 from agentic_rag.llm.schemas import (
     LLMAnswerOutput,
     LLMCitationValidationOutput,
+    LLMContradictionOutput,
     LLMEvidenceOutput,
     LLMMemoryWriteOutput,
 )
@@ -26,7 +29,7 @@ from agentic_rag.tools.arxiv_tools import ArxivToolset
 from agentic_rag.tools.schemas import ArxivLookupByIdInput, ArxivSearchInput
 
 from .citations import build_sources_block, validate_citations
-from .memory import MemoryService
+from .memory import MemoryService, extract_arxiv_ids, extract_focus
 from .router import route_query_with_llm
 from .state import AgentState
 
@@ -47,13 +50,24 @@ class AgentNodes:
 
     def load_state(self, state: AgentState) -> AgentState:
         thread_id = state.get("thread_id", "default")
-        conversation = self.deps.memory_service.read_conversation(thread_id=thread_id, limit=6)
         semantic = self.deps.memory_service.read_semantic(limit=10)
         episodes = self.deps.memory_service.read_episodes(thread_id=thread_id, limit=6)
+        messages = list(state.get("messages", []))
+        checkpoint_summary = str(state.get("conversation_summary", ""))
+        active_focus = str(state.get("active_focus", ""))
+        active_paper_ids = list(state.get("active_paper_ids", []))
+        active_arxiv_ids = list(state.get("active_arxiv_ids", []))
+        recent_turns = self._recent_turns_from_messages(messages, limit=6)
         self._trace(
             state,
-            "memory.conversation_read",
-            {"count": len(conversation.get("recent_turns", [])), "thread_id": thread_id},
+            "memory.checkpoint_read",
+            {"count": len(recent_turns), "thread_id": thread_id, "message_count": len(messages)},
+            node="load_state",
+        )
+        self._trace(
+            state,
+            "memory.checkpoint_enabled",
+            {"enabled": True, "thread_id": thread_id},
             node="load_state",
         )
         self._trace(
@@ -69,14 +83,14 @@ class AgentNodes:
             node="load_state",
         )
         return {
-            "conversation_summary": str(conversation.get("summary", "")),
-            "recent_turns": list(conversation.get("recent_turns", [])),
-            "active_focus": str(conversation.get("active_focus", "")),
-            "active_paper_ids": list(conversation.get("active_paper_ids", [])),
-            "active_arxiv_ids": list(conversation.get("active_arxiv_ids", [])),
+            "conversation_summary": checkpoint_summary,
+            "recent_turns": recent_turns,
+            "active_focus": active_focus,
+            "active_paper_ids": active_paper_ids,
+            "active_arxiv_ids": active_arxiv_ids,
             "memory_context": semantic,
             "episodic_context": episodes,
-            "conversation_memory_read_count": len(conversation.get("recent_turns", [])),
+            "conversation_memory_read_count": len(recent_turns),
             "semantic_memory_read_count": len(semantic),
             "episodic_memory_read_count": len(episodes),
         }
@@ -421,7 +435,13 @@ class AgentNodes:
         llm_result = self._classify_evidence_with_llm(state, packets)
         if llm_result is not None:
             evidence_status = EvidenceStatus(llm_result.evidence_status)
-            final_action = llm_result.recommended_action
+            if (
+                evidence_status == EvidenceStatus.contradictory
+                or llm_result.conflict_label != "NONE"
+            ):
+                final_action = "CONTRADICTION_HANDLER"
+            else:
+                final_action = llm_result.recommended_action
             confidence = llm_result.confidence_band
             conflict_label = llm_result.conflict_label
             update = {
@@ -431,13 +451,16 @@ class AgentNodes:
             }
         else:
             status = state.get("evidence_status", EvidenceStatus.insufficient)
-            if status == EvidenceStatus.sufficient:
+            conflict_label = state.get("conflict_label", "NONE")
+            if status == EvidenceStatus.contradictory or conflict_label != "NONE":
+                final_action = "CONTRADICTION_HANDLER"
+            elif status == EvidenceStatus.sufficient:
                 final_action = "ANSWER_FROM_CONTEXT"
             elif status == EvidenceStatus.ambiguous:
                 final_action = "CLARIFY"
             else:
                 final_action = "REFUSE"
-            update = {"conflict_label": state.get("conflict_label", "NONE")}
+            update = {"conflict_label": conflict_label}
 
         self._trace(
             state,
@@ -729,8 +752,30 @@ class AgentNodes:
             return None
 
     def memory_update(self, state: AgentState) -> AgentState:
-        if state.get("final_action") not in {"ANSWER_FROM_CONTEXT", "ANSWER_FROM_TOOL"}:
+        final_action = state.get("final_action", "")
+        if final_action not in {"ANSWER_FROM_CONTEXT", "ANSWER_FROM_TOOL", "CLARIFY", "REFUSE"}:
             return {}
+        if final_action in {"CLARIFY", "REFUSE"}:
+            episode_id = self.deps.memory_service.write_episode(
+                thread_id=state.get("thread_id", "default"),
+                turn_id=state["turn_id"],
+                user_query=state.get("raw_user_query", ""),
+                route_action=state.get("route_action", ""),
+                route_confidence=state.get("route_confidence"),
+                retrieved_child_ids=state.get("retrieved_child_ids", []),
+                selected_parent_ids=state.get("selected_parent_ids", []),
+                tool_calls=state.get("tool_calls", []),
+                final_action=final_action,
+                final_answer_summary=_truncate_text(str(state.get("final_answer", "")), 280),
+            )
+            self._trace(
+                state,
+                "episode.written",
+                {"episode_id": episode_id},
+                node="memory_update",
+            )
+            conversation_update = self._build_checkpoint_conversation_update(state)
+            return {**conversation_update, "episode_id": episode_id}
         memory_write = self._memory_write_decision(state)
         self._trace(
             state,
@@ -743,23 +788,6 @@ class AgentNodes:
             node="memory_update",
         )
         if not memory_write.should_write or not memory_write.key or not memory_write.value:
-            conversation_update = self.deps.memory_service.update_conversation_after_turn(
-                thread_id=state.get("thread_id", "default"),
-                turn_id=state["turn_id"],
-                user_query=state.get("raw_user_query", ""),
-                assistant_answer=state.get("final_answer", ""),
-                route_action=state.get("route_action", ""),
-                final_action=state.get("final_action", ""),
-            )
-            self._trace(
-                state,
-                "conversation.updated",
-                {
-                    "thread_id": state.get("thread_id", "default"),
-                    "active_focus": conversation_update.get("active_focus", ""),
-                },
-                node="memory_update",
-            )
             episode_id = self.deps.memory_service.write_episode(
                 thread_id=state.get("thread_id", "default"),
                 turn_id=state["turn_id"],
@@ -778,7 +806,8 @@ class AgentNodes:
                 {"episode_id": episode_id},
                 node="memory_update",
             )
-            return {"episode_id": episode_id}
+            conversation_update = self._build_checkpoint_conversation_update(state)
+            return {**conversation_update, "episode_id": episode_id}
 
         memory_id = self.deps.memory_service.write(
             kind=memory_write.kind,
@@ -791,23 +820,6 @@ class AgentNodes:
             state,
             "memory.write",
             {"memory_id": memory_id, "key": memory_write.key, "kind": memory_write.kind},
-        )
-        conversation_update = self.deps.memory_service.update_conversation_after_turn(
-            thread_id=state.get("thread_id", "default"),
-            turn_id=state["turn_id"],
-            user_query=state.get("raw_user_query", ""),
-            assistant_answer=state.get("final_answer", ""),
-            route_action=state.get("route_action", ""),
-            final_action=state.get("final_action", ""),
-        )
-        self._trace(
-            state,
-            "conversation.updated",
-            {
-                "thread_id": state.get("thread_id", "default"),
-                "active_focus": conversation_update.get("active_focus", ""),
-            },
-            node="memory_update",
         )
         episode_id = self.deps.memory_service.write_episode(
             thread_id=state.get("thread_id", "default"),
@@ -827,7 +839,8 @@ class AgentNodes:
             {"episode_id": episode_id},
             node="memory_update",
         )
-        return {"episode_id": episode_id}
+        conversation_update = self._build_checkpoint_conversation_update(state)
+        return {**conversation_update, "episode_id": episode_id}
 
     def _trace(
         self,
@@ -864,6 +877,86 @@ class AgentNodes:
             "ANSWER_FROM_CONTEXT": "answer",
             "CLARIFY": "clarify",
             "REFUSE": "refuse",
+            "CONTRADICTION_HANDLER": "contradiction_handler",
+        }.get(action, "refuse")
+
+    def contradiction_handler(self, state: AgentState) -> AgentState:
+        packets = state.get("context_packets", [])
+        self._trace(
+            state,
+            "contradiction.detected",
+            {
+                "evidence_status": str(state.get("evidence_status", "")),
+                "conflict_label": state.get("conflict_label", "NONE"),
+            },
+            node="contradiction_handler",
+        )
+        decision = self._classify_contradiction_with_llm(state=state, packets=packets)
+        if decision is None:
+            decision = LLMContradictionOutput(
+                conflict_label="DIRECT_CONTRADICTION",
+                recommended_action="CLARIFY",
+                summary="Conflicting evidence could not be resolved confidently.",
+                side_a_source_ids=[],
+                side_b_source_ids=[],
+                metadata_ids_to_check=[],
+                missing_info="Need a narrower question to resolve conflicting claims.",
+                confidence_band="LOW",
+            )
+        self._trace(
+            state,
+            "contradiction.checked",
+            {
+                "conflict_label": decision.conflict_label,
+                "recommended_action": decision.recommended_action,
+                "confidence_band": decision.confidence_band,
+            },
+            node="contradiction_handler",
+        )
+        next_node = {
+            "ANSWER_WITH_CONFLICT": "answer",
+            "CLARIFY": "clarify",
+            "REFUSE": "refuse",
+            "TOOL_LOOKUP": "tool",
+        }[decision.recommended_action]
+        update: AgentState = {
+            "conflict_label": decision.conflict_label,
+            "contradiction_action": decision.recommended_action,
+            "refusal_reason": decision.missing_info or state.get("refusal_reason", ""),
+            "clarifying_question": decision.missing_info or state.get("clarifying_question", ""),
+            "final_action": (
+                "ANSWER_FROM_CONTEXT"
+                if decision.recommended_action == "ANSWER_WITH_CONFLICT"
+                else "CLARIFY"
+                if decision.recommended_action == "CLARIFY"
+                else "REFUSE"
+            ),
+        }
+        if decision.recommended_action == "TOOL_LOOKUP":
+            update["tool_name"] = "arxiv_lookup_by_id"
+            if decision.metadata_ids_to_check:
+                update["tool_args"] = {"arxiv_ids": decision.metadata_ids_to_check}
+            self._trace(
+                state,
+                "contradiction.tool_lookup_requested",
+                {"metadata_ids_to_check": decision.metadata_ids_to_check},
+                node="contradiction_handler",
+            )
+        self._trace(
+            state,
+            "contradiction.handled",
+            {"next_node": next_node, "conflict_label": decision.conflict_label},
+            node="contradiction_handler",
+        )
+        return update
+
+    def contradiction_branch(self, state: AgentState) -> str:
+        action = state.get("contradiction_action", "")
+        return {
+            "ANSWER_WITH_CONFLICT": "answer",
+            "CLARIFY": "clarify",
+            "REFUSE": "refuse",
+            "TOOL_LOOKUP": "tool",
         }.get(action, "refuse")
 
     def _classify_evidence_with_llm(
@@ -1045,6 +1138,107 @@ class AgentNodes:
                 node="memory_update",
             )
             return LLMMemoryWriteOutput(should_write=False)
+
+    def _build_checkpoint_conversation_update(self, state: AgentState) -> AgentState:
+        user_query = state.get("raw_user_query", "")
+        assistant_answer = state.get("final_answer", "")
+        message_count = len(state.get("messages", [])) + 1
+        summary = (
+            f"User asked: {user_query[:180]} | Assistant: "
+            f"{' '.join(assistant_answer.strip().split())[:240]}"
+        )
+        active_focus = extract_focus(user_query=user_query, assistant_answer=assistant_answer)
+        active_arxiv_ids = extract_arxiv_ids(f"{user_query}\n{assistant_answer}")
+        active_paper_ids = [f"paper_{aid.lower()}" for aid in active_arxiv_ids]
+        self._trace(
+            state,
+            "conversation.updated",
+            {
+                "thread_id": state.get("thread_id", "default"),
+                "active_focus": active_focus,
+                "message_count": message_count,
+            },
+            node="memory_update",
+        )
+        self._trace(
+            state,
+            "checkpoint.persisted",
+            {"thread_id": state.get("thread_id", "default"), "message_count": message_count},
+            node="memory_update",
+        )
+        return {
+            "messages": [{"role": "assistant", "content": assistant_answer}],
+            "conversation_summary": summary,
+            "active_focus": active_focus,
+            "active_arxiv_ids": active_arxiv_ids,
+            "active_paper_ids": active_paper_ids,
+            "last_answer_summary": _truncate_text(assistant_answer, 280),
+            "last_selected_parent_ids": state.get("selected_parent_ids", []),
+            "last_retrieved_child_ids": state.get("retrieved_child_ids", []),
+            "last_tool_calls": state.get("tool_calls", []),
+        }
+
+    def _recent_turns_from_messages(
+        self, messages: list[dict[str, object] | object], limit: int
+    ) -> list[dict[str, object]]:
+        turns: list[dict[str, object]] = []
+        for msg in messages[-limit:]:
+            if isinstance(msg, dict):
+                role = str(msg.get("role", ""))
+                content = str(msg.get("content", ""))
+            else:
+                role = str(getattr(msg, "type", ""))
+                content = str(getattr(msg, "content", ""))
+            if role and content:
+                turns.append({"role": role, "content": content})
+        return turns
+
+    def _classify_contradiction_with_llm(
+        self, *, state: AgentState, packets: list[dict[str, object]]
+    ) -> LLMContradictionOutput | None:
+        if not self.deps.llm_client.enabled():
+            return None
+        started = time.monotonic()
+        try:
+            out = self.deps.llm_client.complete_json(
+                model=self.settings.evidence_model,
+                schema=LLMContradictionOutput,
+                system_prompt=CONTRADICTION_SYSTEM_PROMPT,
+                user_prompt=contradiction_user_prompt(
+                    query=state.get("rewritten_query", state.get("raw_user_query", "")),
+                    conflict_label=state.get("conflict_label", "NONE"),
+                    context_packets=packets,
+                    evidence_status=str(state.get("evidence_status", "")),
+                ),
+            )
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.evidence_model,
+                    "schema": "LLMContradictionOutput",
+                    "status": "ok",
+                    "latency_ms": elapsed,
+                },
+                node="contradiction_handler",
+            )
+            return out
+        except Exception as err:  # noqa: BLE001
+            elapsed = int((time.monotonic() - started) * 1000)
+            self._trace(
+                state,
+                "llm.call",
+                {
+                    "model": self.settings.evidence_model,
+                    "schema": "LLMContradictionOutput",
+                    "status": "failed",
+                    "latency_ms": elapsed,
+                    "error": str(err),
+                },
+                node="contradiction_handler",
+            )
+            return None
 
 
 def _strip_internal_ids(text: str) -> str:
