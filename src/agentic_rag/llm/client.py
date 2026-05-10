@@ -35,15 +35,21 @@ class OpenAILLMClient:
             raise RuntimeError("OpenAI LLM client is not configured.")
 
         started = time.monotonic()
-        response = self._client_or_raise().responses.parse(
-            model=model,
-            input=[
+        request = {
+            "model": model,
+            "input": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            text_format=schema,
-            temperature=0,
-        )
+            "text_format": schema,
+            "temperature": 0,
+            "store": False,
+        }
+        try:
+            response = self._client_or_raise().responses.parse(**request)
+        except TypeError:
+            request.pop("store", None)
+            response = self._client_or_raise().responses.parse(**request)
         _ = int((time.monotonic() - started) * 1000)
 
         parsed = getattr(response, "output_parsed", None)

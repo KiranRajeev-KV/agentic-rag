@@ -70,3 +70,16 @@ class LLMCitationValidationOutput(BaseModel):
     unknown_citation_ids: list[str] = Field(default_factory=list)
     internal_id_leaks: list[str] = Field(default_factory=list)
     repair_instruction: str = ""
+
+
+class LLMContradictionOutput(BaseModel):
+    conflict_label: Literal[
+        "NONE", "DIFFERENCE", "TENSION", "DIRECT_CONTRADICTION", "METADATA_CONFLICT"
+    ]
+    recommended_action: Literal["ANSWER_WITH_CONFLICT", "CLARIFY", "REFUSE", "TOOL_LOOKUP"]
+    summary: str
+    side_a_source_ids: list[str] = Field(default_factory=list)
+    side_b_source_ids: list[str] = Field(default_factory=list)
+    metadata_ids_to_check: list[str] = Field(default_factory=list)
+    missing_info: str = ""
+    confidence_band: Literal["HIGH", "MEDIUM", "LOW"] = "LOW"

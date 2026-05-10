@@ -44,6 +44,14 @@ Rules:
 - Treat unsupported claims as invalid.
 """
 
+CONTRADICTION_SYSTEM_PROMPT = """You handle contradiction/tension decisions for grounded QA.
+Return JSON only.
+Choose conflict_label in: NONE, DIFFERENCE, TENSION, DIRECT_CONTRADICTION, METADATA_CONFLICT.
+Choose recommended_action in: ANSWER_WITH_CONFLICT, CLARIFY, REFUSE, TOOL_LOOKUP.
+For DIRECT_CONTRADICTION do not resolve truth; surface both sides with citations.
+For METADATA_CONFLICT prefer TOOL_LOOKUP when metadata IDs are available.
+"""
+
 
 def router_user_prompt(
     query: str,
@@ -121,4 +129,21 @@ def citation_user_prompt(
         f"{json.dumps(allowed_source_ids, ensure_ascii=True)}\n\n"
         "Allowed tool IDs:\n"
         f"{json.dumps(allowed_tool_ids, ensure_ascii=True)}"
+    )
+
+
+def contradiction_user_prompt(
+    *,
+    query: str,
+    conflict_label: str,
+    context_packets: list[dict[str, object]],
+    evidence_status: str,
+) -> str:
+    return (
+        "User query:\n"
+        f"{query}\n\n"
+        f"Evidence status: {evidence_status}\n"
+        f"Conflict label hint: {conflict_label}\n\n"
+        "Context packets:\n"
+        f"{json.dumps(context_packets, ensure_ascii=True)}"
     )
