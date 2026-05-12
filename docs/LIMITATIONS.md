@@ -4,7 +4,7 @@
 - Docling parsing quality may vary for unusual PDF layouts.
 - Corpus is intentionally limited to filtered recent `cs.AI` papers.
 - No general web search is used for paper-content answers.
-- Evidence gate thresholds are calibrated on 16 curated cases, not a large benchmark.
+- Evidence gate thresholds are hand-set heuristics exercised against the small 16-case local workflow; they are not statistically calibrated on a large benchmark.
 - Contradiction handling surfaces conflicts but does not adjudicate scientific truth.
 - No reranking, local embedding model, or hybrid sparse retrieval in v1.
 - Conversation memory is thread-scoped via LangGraph checkpoints; follow-up quality depends on consistent `--thread-id` use.
@@ -19,7 +19,6 @@
 - LLM-assisted citation validation can be inconsistent and can fail closed after successful tool execution.
 - Parent-child expansion increases context size in the recorded ablation.
 - Child-only grouping can duplicate parents and waste context budget.
-- Evidence thresholds are heuristic and calibrated only against the small local workflow, not a large benchmark.
 - Tracing is local SQLite instrumentation rather than distributed observability.
 - Specialized trace tables are not currently joined by `app trace show`.
 - Structured tool-trace rows currently cover supported arXiv tool executions; unsupported tool routes are not represented by a dedicated `tool_traces` row.

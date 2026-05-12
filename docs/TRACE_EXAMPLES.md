@@ -7,7 +7,7 @@ The trace system records intermediate agent decisions into local SQLite tables. 
 - `trace_id` — unique per invocation (format `tr_<id>`)
 - `thread_id` — conversation boundary for checkpoint persistence
 - `turn_id` — unique per graph invocation (format `turn_<id>`)
-- `run_mode` — execution mode (e.g., `ask`, `eval`)
+- `run_mode` — execution mode (e.g., `cli`, `eval`)
 - `started_at` / `completed_at` — lifecycle timestamps
 
 A thread can contain multiple turns, while each invocation gets its own trace/turn IDs.

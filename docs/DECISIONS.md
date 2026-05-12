@@ -72,7 +72,7 @@ Coefficients are hand-authored heuristics, not learned ranking weights. Section-
 
 **Implementation**
 
-`ParentScorer` in `src/agentic_rag/retrieval/parent_scoring.py` computes: `max_child_score + min(support_bonus * (supporting_children - 1), cap) + section_adjustment - references_penalty`. Scores are used to rank parents and select the top-k within the dynamic context budget.
+`score_parent_groups()` in `src/agentic_rag/retrieval/parent_scoring.py` groups child hits by parent and computes: `max_child_score + min(support_bonus * (supporting_children - 1), cap) + section_adjustment - references_penalty`. Scores are used to rank parents and select the top-k within the dynamic context budget.
 
 ## 5. Keep a child-only baseline
 
@@ -108,7 +108,7 @@ This is a fallback merge with heuristic scores, not a proper sparse+dense fusion
 
 **Implementation**
 
-`RetrievalService.retrieve()` checks the child hit count after vector search. If below the threshold, it runs a `LIKE` query against child text in SQLite, merges unseen results with a fixed heuristic score, and proceeds to grouping. The threshold and heuristic score are hardcoded constants.
+`RetrievalService.run()` checks the child hit count after vector search. If below the threshold, it runs a `LIKE` query against child text in SQLite, merges unseen results with a fixed heuristic score, and proceeds to grouping. The threshold and heuristic score are hardcoded constants.
 
 ## 7. Budget context by query shape
 
@@ -126,7 +126,7 @@ Query-shape detection is heuristic. Budget values are manually selected and not 
 
 **Implementation**
 
-`QueryClassifier` in `src/agentic_rag/retrieval/query_classifier.py` uses keyword heuristics to assign a shape label. `ContextAssembler` maps the shape to a parent budget. The budget limits how many top-scoring parents are included in the final context packets.
+`dynamic_parent_budget()` uses lightweight keyword heuristics over the query and returns the parent budget. `assemble_context_packets()` applies the selected parent groups to context construction.
 
 ## 8. Make evidence sufficiency explicit
 
@@ -144,7 +144,7 @@ Thresholds are hand-set heuristics. Current thresholds are not validated on a la
 
 **Implementation**
 
-`EvidenceGate` in `src/agentic_rag/retrieval/evidence_gate.py` computes the signals from retrieved parent groups and applies threshold logic. The gate output drives the LangGraph `evidence_check` node branching.
+`evaluate_evidence()` in `src/agentic_rag/retrieval/evidence_gate.py` computes the signals from retrieved parent groups and applies threshold logic. The gate output drives the LangGraph `evidence_check` node branching.
 
 ## 9. Recover once before giving up
 
@@ -216,7 +216,7 @@ Semantic validation can be inconsistent. Traces show it can reject an otherwise 
 
 **Implementation**
 
-`CitationValidator.deterministic_validate()` runs mechanical rules. `CitationValidator.llm_validate()` (optional) calls an LLM with a structured prompt. The combined outcome is `citation.validated`. The pipeline runs after `answer` and `tool` nodes, before `memory_update`.
+`validate_citations()` runs deterministic citation invariants first. An optional structured LLM validation step follows for unsupported-claim screening. The combined outcome is `citation.validated`. The pipeline runs after `answer` and `tool` nodes, before `memory_update`.
 
 ## 13. Separate conversation, semantic, and episodic memory
 
@@ -234,7 +234,7 @@ More persistence mechanisms mean more state to understand. Checkpoint growth nee
 
 **Implementation**
 
-LangGraph `SqliteSaver` stores checkpoints in the app SQLite DB. `semantic_memories` table stores extracted decisions with embeddings for similarity lookup. `episodes` table stores turn-level summaries including route, retrieved IDs, tools, final action, and short answer summary.
+LangGraph `SqliteSaver` stores checkpoints in the app SQLite DB. `semantic_memories` stores explicit reusable semantic records such as kind/key/value, confidence, source turn, and lifecycle metadata. The current implementation does not embed these records or perform vector-similarity retrieval over semantic memory. `episodes` table stores turn-level summaries including route, retrieved IDs, tools, final action, and short answer summary.
 
 ## 14. Split vector search from relational state
 
@@ -270,4 +270,4 @@ Local trace storage grows over time. The project currently has CLI inspection ra
 
 **Implementation**
 
-`TraceService` writes events to SQLite trace tables with structured JSON payloads. `app trace list` and `app trace show` provide CLI access. Events include compact structured data for each decision point in the graph.
+`TraceWriter` writes structured events and specialized trace records to SQLite. `app trace list` and `app trace show` provide CLI access. Events include compact structured data for each decision point in the graph.
