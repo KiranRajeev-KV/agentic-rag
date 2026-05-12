@@ -162,7 +162,7 @@ Broader retrieval increases work and context candidates. Only one explicit recov
 
 **Implementation**
 
-`RetrievalService.retrieve()` calls the internal retrieval pipeline twice when the first pass yields ambiguous or insufficient evidence. The second pass uses a higher child limit and includes reference sections. Results are re-grouped, re-scored, and re-evaluated. No additional LangGraph node is involved.
+`RetrievalService.run()` performs the initial child retrieval and, when the resulting evidence is AMBIGUOUS or INSUFFICIENT, performs one broader second retrieval pass with a higher child-candidate limit and reference sections enabled. It then rebuilds the groups, context packets, and evidence signals. No additional LangGraph node is involved.
 
 ## 10. Route before executing
 
@@ -180,7 +180,7 @@ Routing contains heuristics and confidence thresholds. Fallback routing is inten
 
 **Implementation**
 
-`route_query` node in `src/agentic_rag/agent/graph.py` runs deterministic keyword checks for arXiv tool intents first. If no deterministic match, it calls an LLM router with a Pydantic output schema. The router output determines the next node.
+The `route_query` graph node is wired in `src/agentic_rag/agent/graph.py` through `AgentNodes.route_query()`. The routing logic in `src/agentic_rag/agent/router.py` first handles explicit arXiv metadata/search intents deterministically; otherwise it uses structured LLM routing when available and falls back to heuristic routing on unavailable/failed model calls. The resulting `RouterDecision` determines the next graph node.
 
 ## 11. Use structured outputs for control-plane decisions
 
