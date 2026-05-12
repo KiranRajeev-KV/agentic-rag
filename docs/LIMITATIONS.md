@@ -4,9 +4,25 @@
 - Docling parsing quality may vary for unusual PDF layouts.
 - Corpus is intentionally limited to filtered recent `cs.AI` papers.
 - No general web search is used for paper-content answers.
-- Evidence gate thresholds are calibrated on 14 curated cases, not a large benchmark.
+- Evidence gate thresholds are calibrated on 16 curated cases, not a large benchmark.
 - Contradiction handling surfaces conflicts but does not adjudicate scientific truth.
 - No reranking, local embedding model, or hybrid sparse retrieval in v1.
 - Conversation memory is thread-scoped via LangGraph checkpoints; follow-up quality depends on consistent `--thread-id` use.
 - Checkpoint tables can grow for long-running threads; periodic local reset/cleanup may be needed.
 - This revision expects local runtime reset (SQLite/Qdrant) rather than backward-compatible DB migration.
+- Only 16 curated behavior-oriented cases.
+- No expected paper/parent relevance labels in the current cases.
+- Current hit@k/MRR output should not be treated as rigorous relevance evaluation without those labels.
+- `memory_score` and `trace_score` are not implemented and remain 0.
+- `context_token_count` is currently whitespace-based, not tokenizer-exact.
+- Eval checkpoint thread IDs are stable across repeated runs and may retain state unless runtime data is reset.
+- LLM-assisted citation validation can be inconsistent and can fail closed after successful tool execution.
+- Parent-child expansion increases context size in the recorded ablation.
+- Child-only grouping can duplicate parents and waste context budget.
+- Evidence thresholds are heuristic and calibrated only against the small local workflow, not a large benchmark.
+- Tracing is local SQLite instrumentation rather than distributed observability.
+- Specialized trace tables are not currently joined by `app trace show`.
+- Structured tool-trace rows currently cover supported arXiv tool executions; unsupported tool routes are not represented by a dedicated `tool_traces` row.
+- Structured answer traces are incomplete for clarification/refusal paths.
+- Trace token/cost accounting is not implemented.
+- Trace/trajectory evaluation is not implemented.

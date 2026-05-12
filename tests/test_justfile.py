@@ -7,7 +7,6 @@ REQUIRED_RECIPES = [
     "qdrant-down",
     "db-init",
     "db-reset",
-    "discover",
     "ingest",
     "index",
     "ask",

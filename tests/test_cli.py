@@ -207,7 +207,7 @@ def test_eval_commands_with_mocked_runner(monkeypatch) -> None:
             assert str(variant) in {"child_only", "parent_child"}
             return {
                 "variant": str(variant),
-                "cases": 14,
+                "cases": 16,
                 "raw_score": 100.0,
                 "normalized_score": 71.4,
                 "hard_fail_refusal": False,
@@ -227,7 +227,7 @@ def test_eval_commands_with_mocked_runner(monkeypatch) -> None:
 
     run_result = runner.invoke(app, ["eval", "run", "--variant", "child_only"])
     assert run_result.exit_code == 0
-    assert "eval.summary variant=child_only cases=14" in run_result.stdout
+    assert "eval.summary variant=child_only cases=16" in run_result.stdout
 
     compare_result = runner.invoke(
         app,

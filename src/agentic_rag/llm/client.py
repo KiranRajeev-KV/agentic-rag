@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import TypeVar
 
 from openai import OpenAI
@@ -34,7 +33,6 @@ class OpenAILLMClient:
         if not self.enabled():
             raise RuntimeError("OpenAI LLM client is not configured.")
 
-        started = time.monotonic()
         request = {
             "model": model,
             "input": [
@@ -50,7 +48,6 @@ class OpenAILLMClient:
         except TypeError:
             request.pop("store", None)
             response = self._client_or_raise().responses.parse(**request)
-        _ = int((time.monotonic() - started) * 1000)
 
         parsed = getattr(response, "output_parsed", None)
         if parsed is None:

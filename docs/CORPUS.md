@@ -9,7 +9,7 @@ The canonical corpus is:
 
 ## Corpus Definition
 - Size: **100 papers**
-- Source family: recent arXiv papers in assignment scope (`cs.AI`-anchored)
+- Source family: recent arXiv papers centered on `cs.AI` and adjacent relevant categories
 - Corpus lock date: **2026-05-10**
 - File integrity: each paper has pinned `pdf_sha256`
 
@@ -22,8 +22,8 @@ The canonical corpus is:
 - Runtime ingestion depends on local files, not live discovery.
 - The locked manifest is deterministic across runs.
 
-3. Assignment fit
-- The set is focused on agentic/LLM retrieval-memory-planning-evaluation themes required by the project’s QA and eval tasks.
+3. Research focus
+- The set is focused on agentic systems, retrieval, memory, planning, grounding, and evaluation topics exercised by the project.
 
 4. Parse-ready for this stack
 - The selected set is validated against Docling + HybridChunker behavior used in this repository.

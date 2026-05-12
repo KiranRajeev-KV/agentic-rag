@@ -22,7 +22,16 @@ Retrieval metrics delta:
 - `context_token_count`: `+236.75` (722.75 -> 959.50)
 
 Interpretation:
-- In this run, parent-child’s win is explained by better behavior on a tool-routing case (`e15_tool_search`) while performing similarly elsewhere. Parent scoring quality (`parent_mrr`) is identical in aggregate for this run, but parent-child uses more context on average.
+- In this run, parent-child's higher overall score is explained by better behavior on a tool-routing case (`e15_tool_search`) while performing similarly elsewhere. Parent scoring quality (`parent_mrr`) is identical in aggregate for this run, but parent-child uses more context on average.
+
+## What this ablation does and does not show
+
+- The recorded `parent_child` normalized score is 0.62 higher.
+- This delta should not be interpreted as a demonstrated retrieval-quality improvement.
+- Aggregate paper hit, parent hit, and parent MRR values did not change.
+- The score difference arose from `e15_tool_search`, which used the tool path rather than parent-child document retrieval.
+- `parent_child` used a larger assembled context approximation.
+- The current eval lacks labelled document/parent relevance judgments, limiting retrieval conclusions.
 
 ## Trace-Backed Failure Analyses
 
@@ -42,7 +51,7 @@ What happened (from trace events):
 - In `parent_child`, the same tool call succeeds and the citation validator returns `VALID`, preserving `ANSWER_FROM_TOOL` (`tr_5fb2c98684db`).
 
 Why it matters:
-- This is a real “fail-closed” behavior: a successful tool result can still produce a refusal if the LLM citation validator is overly strict/flaky.
+- This is a real "fail-closed" behavior: a successful tool result can still produce a refusal if the LLM citation validator is overly strict/flaky.
 
 ### 2) Ambiguous Follow-Up: Answer vs Clarify Divergence Despite SUFFICIENT Evidence (e12)
 
@@ -60,7 +69,9 @@ What happened (from trace events):
 - In `parent_child`, the model generates an answer with citations and passes citation validation (`answer.generated` then `citation.validated status=ok`) and ends `ANSWER_FROM_CONTEXT` (`tr_58c495685cc9`).
 
 Why it matters:
-- This shows the “underspecified follow-up” edge: even with sufficient retrieved evidence, the system may decide the user intent is unclear (clarify) versus taking a best-effort grounded answer path.
+- This shows the "underspecified follow-up" edge: even with sufficient retrieved evidence, the system may decide the user intent is unclear (clarify) versus taking a best-effort grounded answer path.
+
+**Evaluation isolation note: this YAML case contains no explicit conversation history, yet the recorded trace reports checkpoint-derived follow-up context. Eval thread IDs are reused across runs, so persistent checkpoint state is a potential confounder. The trace alone is not enough to prove that this was the cause.**
 
 ### 3) Child-Only Retrieval Can Waste Parent Budget via Duplicate Parent IDs (e12)
 

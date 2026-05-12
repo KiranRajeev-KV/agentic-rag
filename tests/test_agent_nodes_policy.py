@@ -326,3 +326,73 @@ def test_evidence_branch_routes_contradiction_handler() -> None:
     nodes = _build_nodes(_FakeMemoryService())
     branch = nodes.evidence_branch({"final_action": "CONTRADICTION_HANDLER"})
     assert branch == "contradiction_handler"
+
+
+def test_tool_trace_includes_measured_latency() -> None:
+    class _Toolset:
+        def arxiv_search(self, payload):  # noqa: ANN001
+            del payload
+            return ArxivToolOutput(
+                status=ToolStatus.ok,
+                papers=[
+                    ArxivPaperMetadata(
+                        arxiv_id="2501.00002",
+                        version="v1",
+                        title="Search Paper",
+                        authors=["A"],
+                        abstract="Abstract",
+                        categories=["cs.AI"],
+                    )
+                ],
+            )
+
+    class _TraceWriter:
+        def __init__(self) -> None:
+            self.tool_payloads = []
+
+        def event(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+        def retrieval(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+        def tool(self, **kwargs):  # noqa: ANN003
+            self.tool_payloads.append(kwargs)
+
+        def evidence(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+        def answer(self, **kwargs):  # noqa: ANN003
+            del kwargs
+
+    trace_writer = _TraceWriter()
+
+    deps = AgentDependencies(
+        retrieval_service=object(),
+        memory_service=_FakeMemoryService(),
+        toolset=_Toolset(),
+        trace_writer=trace_writer,
+        llm_client=_FakeLLMClient(),
+    )
+    nodes = AgentNodes(deps=deps)
+
+    state = {
+        "trace_id": "tr_tool_latency",
+        "raw_user_query": "search arxiv transformers",
+        "rewritten_query": "search arxiv transformers",
+        "tool_name": "arxiv_search",
+        "tool_args": {"query": "transformers"},
+    }
+    nodes.tool(state)
+
+    assert len(trace_writer.tool_payloads) == 1
+
+    record = trace_writer.tool_payloads[0]
+    assert record["trace_id"] == "tr_tool_latency"
+
+    payload = record["payload"]
+    assert payload["tool_name"] == "arxiv_search"
+    assert payload["tool_status"] == "ok"
+    assert payload["tool_result_summary"] == "papers=1"
+    assert isinstance(payload["tool_latency_ms"], int)
+    assert payload["tool_latency_ms"] >= 0

@@ -29,10 +29,6 @@ db-reset:
     fi
     uv run app db reset --yes
 
-# Discover candidate corpus papers
-@discover limit="20":
-    uv run app corpus discover --limit {{limit}}
-
 # Ingest papers into SQLite only
 @ingest limit="20":
     uv run app ingest --limit {{limit}}

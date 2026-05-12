@@ -290,17 +290,6 @@ class AgentNodes:
                 },
                 node="tool",
             )
-            if state.get("trace_id"):
-                self.deps.trace_writer.tool(
-                    trace_id=state["trace_id"],
-                    payload={
-                        "tool_name": tool_name,
-                        "tool_args": payload.model_dump(mode="json"),
-                        "tool_status": output.status.value,
-                        "tool_result_summary": f"papers={len(output.papers)}",
-                        "tool_error": "; ".join(output.errors[:2]) if output.errors else "",
-                    },
-                )
             lines = []
             for idx, paper in enumerate(output.papers[:5], start=2):
                 lines.append(
@@ -326,6 +315,18 @@ class AgentNodes:
             else:
                 answer = "No matching arXiv records were returned for this query [T1]."
                 citations = ["T1"]
+            if state.get("trace_id"):
+                self.deps.trace_writer.tool(
+                    trace_id=state["trace_id"],
+                    payload={
+                        "tool_name": tool_name,
+                        "tool_args": payload.model_dump(mode="json"),
+                        "tool_status": output.status.value,
+                        "tool_latency_ms": tool_latency_ms,
+                        "tool_result_summary": f"papers={len(output.papers)}",
+                        "tool_error": "; ".join(output.errors[:2]) if output.errors else "",
+                    },
+                )
             self._trace(
                 state,
                 "tool.completed",
@@ -378,16 +379,6 @@ class AgentNodes:
                 },
                 node="tool",
             )
-            if state.get("trace_id"):
-                self.deps.trace_writer.tool(
-                    trace_id=state["trace_id"],
-                    payload={
-                        "tool_name": tool_name,
-                        "tool_args": payload.model_dump(mode="json"),
-                        "tool_status": output.status.value,
-                        "tool_result_summary": f"papers={len(output.papers)}",
-                    },
-                )
             lines = []
             for idx, paper in enumerate(output.papers[:5], start=2):
                 lines.append(
@@ -407,6 +398,18 @@ class AgentNodes:
             else:
                 answer = "No matching arXiv records were returned for those IDs [T1]."
                 citations = ["T1"]
+            if state.get("trace_id"):
+                self.deps.trace_writer.tool(
+                    trace_id=state["trace_id"],
+                    payload={
+                        "tool_name": tool_name,
+                        "tool_args": payload.model_dump(mode="json"),
+                        "tool_status": output.status.value,
+                        "tool_latency_ms": tool_latency_ms,
+                        "tool_result_summary": f"papers={len(output.papers)}",
+                        "tool_error": "; ".join(output.errors[:2]) if output.errors else "",
+                    },
+                )
             self._trace(
                 state,
                 "tool.completed",

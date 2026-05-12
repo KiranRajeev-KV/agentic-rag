@@ -19,7 +19,6 @@ app = typer.Typer(help="Agentic RAG local-first CLI.")
 eval_app = typer.Typer(help="Run evaluation and ablation commands.")
 trace_app = typer.Typer(help="Inspect run traces.")
 db_app = typer.Typer(help="Database utility commands.")
-corpus_app = typer.Typer(help="Corpus discovery and ingestion helpers.")
 
 app.add_typer(eval_app, name="eval")
 app.add_typer(trace_app, name="trace")
@@ -229,7 +228,12 @@ def db_reset_command(
     typer.echo(f"Reset SQLite DB at {settings.app_db_path}")
 
 
-def _run_index(settings: Settings, limit: int, batch_size: int, force: bool) -> None:
+def _run_index(
+    settings: Settings,
+    limit: int | None,
+    batch_size: int,
+    force: bool,
+) -> None:
     initialize_storage(settings=settings, init_qdrant=False)
     typer.echo(
         "index.warning this will call OpenAI embeddings and may incur API cost. "

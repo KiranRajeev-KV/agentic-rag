@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     answer_model: str = Field(default="gpt-5-nano", alias="ANSWER_MODEL")
     router_model: str = Field(default="gpt-5-nano", alias="ROUTER_MODEL")
     evidence_model: str = Field(default="gpt-5-nano", alias="EVIDENCE_MODEL")
-    arxiv_user_agent: str = Field(default="agentic-rag-assignment/0.1", alias="ARXIV_USER_AGENT")
+    arxiv_user_agent: str = Field(default="agentic-rag/0.1", alias="ARXIV_USER_AGENT")
 
     def ensure_runtime_dirs(self) -> None:
         self.app_db_path.parent.mkdir(parents=True, exist_ok=True)
