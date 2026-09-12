@@ -26,8 +26,6 @@ These commands are the intended local checks. They were not rerun as part of thi
 | Evaluation plumbing | `test_evals.py` | variant execution/comparison and evaluator mechanics |
 | Convenience commands | `test_justfile.py` | expected recipe presence |
 
-Do not add a coverage percentage.
-
 ## Testing style
 
 - Temporary SQLite databases and temporary directories isolate persistence-heavy tests.
@@ -59,12 +57,5 @@ Do not add a coverage percentage.
 - It does not currently provide CI-backed verification on every commit.
 - It does not prove long-horizon memory/checkpoint correctness across extended conversations.
 - It does not provide a code-coverage percentage in this repository.
-
-## Recently cleaned maintenance items
-
-Two stale test/developer-workflow inconsistencies identified during repository review were cleaned up:
-
-- The mocked CLI evaluator fixture now uses the current 16-case evaluation-set size.
-- The retired live-discovery `just discover` recipe and its test expectation were removed after the project moved to the fixed manifest workflow.
 
 For evaluation-specific limitations, see `EVAL_REPORT.md`. For runtime configuration and reproducibility, see `CONFIGURATION.md`.
