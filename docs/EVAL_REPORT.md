@@ -1,6 +1,6 @@
 # Eval Report
 
-> This report documents an existing recorded run. The application was not rerun while updating this documentation.
+> This report documents an existing recorded run.
 
 ## Scope
 
